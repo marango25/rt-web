@@ -119,7 +119,7 @@ function applyFrame(rawBytes, t, proto) {
 
   maybeAutosaveSession();
 
-  if (viewMode === "live") renderMain();
+  if (viewMode === "live") refreshLiveFrame();
 }
 
 function updateLogCount() {
@@ -451,23 +451,34 @@ function nearestIndex(breakpoints, value) {
   return bestI;
 }
 
+/**
+ * Todo lo que depende de los valores en vivo para una tabla: qué parámetro
+ * quedó emparejado a cada eje, el valor actual, la celda activa y el texto
+ * del hint. Se usa tanto para el HTML inicial (buildTablesHtml) como para
+ * el refresco en caliente en cada frame (updateTableHighlights) - ese
+ * segundo camino NO reconstruye el HTML (ver el porqué en updateTableHighlights).
+ */
+function computeTablePosition(t, idx) {
+  const xParam = resolveAxisParam(idx, "x", matchParamForAxisLabel(t.xLabel));
+  const yParam = resolveAxisParam(idx, "y", matchParamForAxisLabel(t.yLabel));
+
+  const xVal = xParam ? currentValues[xParam.id] : undefined;
+  const yVal = yParam ? currentValues[yParam.id] : undefined;
+  const activeCol = xVal !== undefined ? nearestIndex(t.xAxis, xVal) : -1;
+  const activeRow = yVal !== undefined ? nearestIndex(t.yAxis, yVal) : -1;
+
+  const hint =
+    xParam && yParam && xVal !== undefined && yVal !== undefined
+      ? `Posición actual: ${t.xLabel} = ${xVal.toFixed(2)} ${xParam.units} (columna ${activeCol + 1}) · ${t.yLabel} = ${yVal.toFixed(2)} ${yParam.units} (fila ${activeRow + 1})`
+      : `Sin datos en vivo para resaltar esta tabla todavía — elige el parámetro de cada eje abajo, o carga un .adx con nombres parecidos a "${t.xLabel}" / "${t.yLabel}".`;
+
+  return { xParam, yParam, xVal, yVal, activeRow, activeCol, hint };
+}
+
 function buildTablesHtml() {
   return loadedTables
     .map((t, idx) => {
-      const autoX = matchParamForAxisLabel(t.xLabel);
-      const autoY = matchParamForAxisLabel(t.yLabel);
-      const xParam = resolveAxisParam(idx, "x", autoX);
-      const yParam = resolveAxisParam(idx, "y", autoY);
-
-      const xVal = xParam ? currentValues[xParam.id] : undefined;
-      const yVal = yParam ? currentValues[yParam.id] : undefined;
-      const activeCol = xVal !== undefined ? nearestIndex(t.xAxis, xVal) : -1;
-      const activeRow = yVal !== undefined ? nearestIndex(t.yAxis, yVal) : -1;
-
-      const hint =
-        xParam && yParam && xVal !== undefined && yVal !== undefined
-          ? `Posición actual: ${t.xLabel} = ${xVal.toFixed(2)} ${xParam.units} (columna ${activeCol + 1}) · ${t.yLabel} = ${yVal.toFixed(2)} ${yParam.units} (fila ${activeRow + 1})`
-          : `Sin datos en vivo para resaltar esta tabla todavía — elige el parámetro de cada eje abajo, o carga un .adx con nombres parecidos a "${t.xLabel}" / "${t.yLabel}".`;
+      const { activeRow, activeCol, hint } = computeTablePosition(t, idx);
 
       const paramOptionsHtml = (selectedId) =>
         `<option value="">(auto)</option>` +
@@ -492,7 +503,7 @@ function buildTablesHtml() {
       }
 
       return `
-        <div class="table-block">
+        <div class="table-block" data-table-idx="${idx}">
           <h3>${t.name} <span style="color:var(--text-dim);font-size:12px;">(${t.units || "sin unidad"})</span></h3>
           <div class="table-position-hint">${hint}</div>
           <div class="axis-match-controls">
@@ -510,6 +521,39 @@ function buildTablesHtml() {
       `;
     })
     .join("");
+}
+
+/**
+ * Refresca el resaltado de "posición actual" en cada tabla YA presente en
+ * el DOM, sin tocar el HTML de la tabla (headers, celdas, <select> de eje).
+ * Existe para arreglar un bug real: renderMain() reconstruía toda la
+ * sección de tablas en cada frame en vivo (cada ~200ms en modo simulado),
+ * lo que recreaba los <select> de eje - y un <select> nativo se cierra solo
+ * en cuanto el elemento que lo contiene se destruye, así que era imposible
+ * alcanzar a elegir una opción. Esta función solo toca el texto del hint y
+ * las clases de celda activa, dejando los <select> intactos entre frames.
+ */
+function updateTableHighlights() {
+  loadedTables.forEach((t, idx) => {
+    const block = document.querySelector(`#tables-section .table-block[data-table-idx="${idx}"]`);
+    if (!block) return;
+
+    const { activeRow, activeCol, hint } = computeTablePosition(t, idx);
+
+    const hintEl = block.querySelector(".table-position-hint");
+    if (hintEl) hintEl.textContent = hint;
+
+    block.querySelectorAll("td.active-cell, td.active-row, td.active-col").forEach((td) => {
+      td.classList.remove("active-cell", "active-row", "active-col");
+    });
+    block.querySelectorAll("table.data-table tbody tr").forEach((tr, r) => {
+      tr.querySelectorAll("td.td-cell").forEach((td, c) => {
+        if (r === activeRow && c === activeCol) td.classList.add("active-cell");
+        else if (r === activeRow) td.classList.add("active-row");
+        else if (c === activeCol) td.classList.add("active-col");
+      });
+    });
+  });
 }
 
 /** Evalúa alertas de rango y "valor congelado" para un parámetro. Devuelve { outOfRange, isStuck, stuckSec }. */
@@ -616,10 +660,13 @@ function wireLiveSection() {
 }
 
 /**
- * Punto de entrada único de render para las vistas "en vivo"/"tablas" (todo
- * lo que no sea replay, que tiene su propio renderReplay()). Muestra tablas
- * y parámetros en vivo a la vez cuando ambos están cargados - así la tabla
- * puede resaltar la celda donde está operando el motor ahora mismo.
+ * Render ESTRUCTURAL para las vistas "en vivo"/"tablas" (todo lo que no sea
+ * replay, que tiene su propio renderReplay()). Reconstruye el HTML entero -
+ * úsalo solo cuando cambia la estructura (se carga un .xdf/.adx/.bin, se
+ * cambia un override de eje, se expande/colapsa una gráfica), NUNCA por
+ * cada frame en vivo: reconstruir la sección de tablas en cada frame
+ * destruye los <select> de eje a medio uso (ver updateTableHighlights).
+ * Para refrescar solo los valores en vivo, usa refreshLiveFrame().
  */
 function renderMain() {
   if (!loadedTables.length && !loadedParams.length) {
@@ -630,11 +677,35 @@ function renderMain() {
 
   const tablesHtml = loadedTables.length ? buildTablesHtml() : "";
   const liveHtml = loadedParams.length ? buildLiveHtml() : "";
-  el.main.innerHTML = tablesHtml + (tablesHtml && liveHtml ? `<hr class="section-divider" />` : "") + liveHtml;
+  el.main.innerHTML =
+    (tablesHtml ? `<div id="tables-section">${tablesHtml}</div>` : "") +
+    (tablesHtml && liveHtml ? `<hr class="section-divider" />` : "") +
+    (liveHtml ? `<div id="live-section">${liveHtml}</div>` : "");
 
   if (loadedParams.length) wireLiveSection();
   else updateAlertBanner([]);
 
+  updateSurface3dLivePosition();
+}
+
+/**
+ * Refresco "en caliente" para cada frame en vivo (sim o ESP8266 real): NO
+ * toca la sección de tablas más que sus clases de celda activa + el texto
+ * del hint (updateTableHighlights) - los <select> de eje quedan intactos.
+ * La sección de tarjetas en vivo sí se reconstruye entera (no tiene
+ * controles de formulario nativos que se puedan cerrar solos), para que
+ * valores/gráficas/alertas se vean al segundo.
+ */
+function refreshLiveFrame() {
+  const liveSection = document.getElementById("live-section");
+  if (loadedParams.length && liveSection) {
+    liveSection.innerHTML = buildLiveHtml();
+    wireLiveSection();
+  } else if (!loadedParams.length) {
+    updateAlertBanner([]);
+  }
+
+  if (loadedTables.length) updateTableHighlights();
   updateSurface3dLivePosition();
 }
 
@@ -778,9 +849,8 @@ function updateSurface3dLivePosition() {
   const table = loadedTables[open3dTableIdx];
   if (!table) return;
 
-  const xParam = resolveAxisParam(open3dTableIdx, "x", matchParamForAxisLabel(table.xLabel));
-  const yParam = resolveAxisParam(open3dTableIdx, "y", matchParamForAxisLabel(table.yLabel));
-  surface3dInstance.updateLivePosition(xParam ? currentValues[xParam.id] : undefined, yParam ? currentValues[yParam.id] : undefined);
+  const { xVal, yVal } = computeTablePosition(table, open3dTableIdx);
+  surface3dInstance.updateLivePosition(xVal, yVal);
 }
 
 // --- Utilidades de gráfica compartidas (vivo + replay) ---------------------
