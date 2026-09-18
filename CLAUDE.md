@@ -65,7 +65,20 @@ y conectar con la llave en "on" para probar contra el auto real.
    frames falsos oscilantes (onda seno por byte) y se conecta al mismo
    pipeline `onFrame` que usa `ws-client.js`, vía el botón "Modo simulado"
    en la sidebar. No pisa la conexión real (cada uno detiene al otro).
-2. Vista de superficie 3D (Three.js) para tablas XDF.
+2. ~~Vista de superficie 3D (Three.js) para tablas XDF~~ — HECHO: botón "Ver
+   en 3D" en cada tabla (`buildTablesHtml()` en `src/main.js`) abre un panel
+   fijo fuera de `el.main` (mismo patrón que el tooltip/banner - una escena
+   WebGL no se puede reconstruir en cada re-render de `renderMain()` sin
+   perder la cámara) con la superficie orbitable, coloreada por altura, más
+   el mismo marcador de "posición actual" que el overlay 2D. Lógica en
+   `src/surface3d.js`, cargado con `import()` dinámico solo al abrirse (para
+   no pagar la descarga de Three.js en sesiones que nunca tocan tablas).
+   **Three.js está vendorizado localmente** en `src/vendor/` (no CDN, para
+   que funcione sin internet) y resuelto vía import map en `index.html` -
+   son ~700KB entre el core y OrbitControls. Si algún día hosteas la app
+   directo desde el ESP8266 (en vez de una laptop/Raspberry Pi), ojo con el
+   espacio de flash disponible para SPIFFS/LittleFS; probado con
+   `defs/example.xdf` + `example_calibration.bin` vía "Modo simulado".
 3. ~~Autodetección de protocolo (160 vs 8192 baud) en el firmware~~ — HECHO:
    `esp8266_aldl_bridge.ino` prueba 160 baud primero (confirmado en el
    Sonoma) y, tras `ALDL_PROTO_FAILURES_BEFORE_SWITCH` intentos fallidos

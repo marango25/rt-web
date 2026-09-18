@@ -102,6 +102,16 @@
     </main>
   </div>
 
+  <!--
+    Import map: resuelve el specifier "three" (usado por src/vendor/OrbitControls.js,
+    que importa "from 'three'" tal cual el paquete real de npm) hacia el archivo
+    vendorizado localmente. Necesario para que la vista 3D (src/surface3d.js,
+    cargada con import() dinámico solo cuando se abre - ver openSurface3D en
+    main.js) funcione offline, sin depender de un CDN externo ni de un bundler.
+  -->
+  <script type="importmap">
+    { "imports": { "three": "./vendor/three.module.min.js" } }
+  </script>
   <script type="module" src="main.js"></script>
 </body>
 </html>

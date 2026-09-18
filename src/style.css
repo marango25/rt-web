@@ -318,6 +318,66 @@ table.data-table th {
   margin: 24px 0;
 }
 
+.view-3d-btn {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  margin-left: auto;
+}
+
+.view-3d-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+#surface3d-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 20px;
+}
+
+/* Ojo: display va aparte de las demás reglas de #surface3d-panel, guardado
+   detrás de :not([hidden]) - si estuviera en la misma regla de arriba, un
+   selector por id le gana en especificidad al [hidden] del navegador y el
+   panel nunca se llegaría a ocultar de verdad al ponerle .hidden = true. */
+#surface3d-panel:not([hidden]) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.surface3d-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 16px;
+  width: min(900px, 100%);
+  max-width: 100%;
+}
+
+.surface3d-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.surface3d-card canvas {
+  display: block;
+  width: 100%;
+  height: 420px;
+  border-radius: 8px;
+  touch-action: none;
+}
+
 .param-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
@@ -584,5 +644,13 @@ table.data-table th {
   table.data-table {
     display: block;
     overflow-x: auto;
+  }
+
+  #surface3d-panel {
+    padding: 10px;
+  }
+
+  .surface3d-card canvas {
+    height: 280px;
   }
 }

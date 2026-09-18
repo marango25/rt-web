@@ -351,6 +351,7 @@ el.fileInput.addEventListener("change", async (evt) => {
       // resaltado de "posición actual" sobre la tabla (overlay en vivo).
       loadedTables = parseXDF(text).tables;
       axisOverrides = {}; // los índices de tabla cambiaron, cualquier override viejo ya no aplica
+      closeSurface3D(); // la vista 3D abierta (si había) apuntaba a un índice de tabla que ya no aplica
       renderMain();
     } else if (format === "adx") {
       await persistCurrentSession(); // guarda lo que quedó pendiente de la sesión anterior antes de reiniciar
@@ -501,6 +502,7 @@ function buildTablesHtml() {
             <label>Eje Y (${t.yLabel}):
               <select class="axis-select" data-table-idx="${idx}" data-axis="y">${paramOptionsHtml(axisOverrides[`${idx}:y`] || "")}</select>
             </label>
+            <button type="button" class="view-3d-btn" data-table-idx="${idx}">Ver en 3D</button>
           </div>
           <table class="data-table"><thead>${headerRow}</thead><tbody>${bodyRows}</tbody></table>
           ${!loadedBin ? `<div class="hint">Sin binario (.bin) cargado — mostrando offsets, no valores reales de calibración.</div>` : ""}
@@ -632,6 +634,8 @@ function renderMain() {
 
   if (loadedParams.length) wireLiveSection();
   else updateAlertBanner([]);
+
+  updateSurface3dLivePosition();
 }
 
 // --- Banner de alertas flotante ---------------------------------------------
@@ -698,6 +702,85 @@ function positionTooltip(clientX, clientY) {
 
 function hideTooltip() {
   tooltipEl.hidden = true;
+}
+
+// --- Vista 3D de una tabla (superficie, al estilo TunerPro RT) -------------
+// Vive fuera del innerHTML de el.main (mismo motivo que el tooltip/banner):
+// renderMain() reemplaza ese HTML en cada frame en vivo, y una escena
+// WebGL no se puede reconstruir desde cero cada vez sin perder la cámara y
+// sin gastar recursos de más - así que el panel + la instancia de Three.js
+// sobreviven a los re-renders, y solo actualizamos la posición del
+// marcador en updateSurface3dLivePosition().
+
+const surface3dPanelEl = document.createElement("div");
+surface3dPanelEl.id = "surface3d-panel";
+surface3dPanelEl.hidden = true;
+surface3dPanelEl.innerHTML = `
+  <div class="surface3d-card">
+    <div class="surface3d-header">
+      <span id="surface3d-title"></span>
+      <button id="surface3d-close" type="button" class="close-chart">Cerrar ✕</button>
+    </div>
+    <div class="hint" id="surface3d-hint"></div>
+    <canvas id="surface3d-canvas"></canvas>
+  </div>
+`;
+document.body.appendChild(surface3dPanelEl);
+
+let open3dTableIdx = null; // índice en loadedTables de la tabla mostrada en 3D, o null si el panel está cerrado
+let surface3dInstance = null; // { updateLivePosition, resize, dispose } de surface3d.js, o null
+let surface3dModulePromise = null; // cachea el import() dinámico - solo se descarga Three.js una vez por sesión
+
+function loadSurface3DModule() {
+  if (!surface3dModulePromise) surface3dModulePromise = import("./surface3d.js");
+  return surface3dModulePromise;
+}
+
+function closeSurface3D() {
+  if (surface3dInstance) {
+    surface3dInstance.dispose();
+    surface3dInstance = null;
+  }
+  open3dTableIdx = null;
+  surface3dPanelEl.hidden = true;
+}
+
+async function openSurface3D(idx) {
+  const table = loadedTables[idx];
+  if (!table) return;
+  if (surface3dInstance) {
+    surface3dInstance.dispose();
+    surface3dInstance = null;
+  }
+
+  open3dTableIdx = idx;
+  surface3dPanelEl.hidden = false;
+  document.getElementById("surface3d-title").textContent = `Vista 3D: ${table.name}`;
+  document.getElementById("surface3d-hint").textContent = "Cargando Three.js...";
+
+  const { createSurface3D } = await loadSurface3DModule();
+  if (open3dTableIdx !== idx) return; // se cerró o se cambió de tabla mientras cargaba
+
+  document.getElementById("surface3d-hint").textContent = loadedBin
+    ? "Arrastra para rotar, rueda del mouse para acercar/alejar."
+    : "Sin binario (.bin) cargado - mostrando la estructura de la tabla en plano. Arrastra para rotar, rueda para zoom.";
+
+  const canvas = document.getElementById("surface3d-canvas");
+  surface3dInstance = createSurface3D(canvas, table, loadedBin);
+  updateSurface3dLivePosition();
+}
+
+document.getElementById("surface3d-close").addEventListener("click", closeSurface3D);
+
+/** Mueve el marcador de posición actual dentro de la vista 3D abierta, reusando el mismo emparejamiento de ejes que el overlay 2D. */
+function updateSurface3dLivePosition() {
+  if (open3dTableIdx == null || !surface3dInstance) return;
+  const table = loadedTables[open3dTableIdx];
+  if (!table) return;
+
+  const xParam = resolveAxisParam(open3dTableIdx, "x", matchParamForAxisLabel(table.xLabel));
+  const yParam = resolveAxisParam(open3dTableIdx, "y", matchParamForAxisLabel(table.yLabel));
+  surface3dInstance.updateLivePosition(xParam ? currentValues[xParam.id] : undefined, yParam ? currentValues[yParam.id] : undefined);
 }
 
 // --- Utilidades de gráfica compartidas (vivo + replay) ---------------------
@@ -1132,6 +1215,7 @@ function renderReplay() {
   viewMode = "replay";
   replayZoom = { start: 0, end: 1 };
   updateAlertBanner([]);
+  closeSurface3D(); // el panel 3D flota fuera de el.main - hay que cerrarlo a mano al salir de la vista en vivo
 
   el.main.innerHTML = `
     <h3>Replay: ${a.name}${b ? ` vs ${b.name}` : ""}</h3>
@@ -1278,6 +1362,7 @@ function renderBinDiff() {
 
   viewMode = "bindiff";
   updateAlertBanner([]);
+  closeSurface3D(); // el panel 3D flota fuera de el.main - hay que cerrarlo a mano al salir de la vista en vivo
 
   let html = `
     <h3>Comparador de binarios</h3>
@@ -1369,6 +1454,13 @@ el.clearLogBtn.addEventListener("click", async () => {
 
 el.main.addEventListener("click", (evt) => {
   if (viewMode !== "live") return;
+
+  const btn3d = evt.target.closest(".view-3d-btn");
+  if (btn3d) {
+    openSurface3D(parseInt(btn3d.dataset.tableIdx, 10));
+    return;
+  }
+
   const card = evt.target.closest(".param-card");
   if (!card) return;
   const id = card.dataset.paramId;
