@@ -69,8 +69,16 @@ y conectar con la llave en "on" para probar contra el auto real.
 3. Autodetección de protocolo (160 vs 8192 baud) en el firmware.
 4. Checksum / comparador de binarios (funcionalidad de TunerPro aún no
    portada).
-5. Overlay del log en vivo sobre las tablas del XDF (la feature "estrella"
-   original de TunerPro RT).
+5. ~~Overlay del log en vivo sobre las tablas del XDF~~ — HECHO: cargar un
+   .xdf y un .adx a la vez ya no se pisan (`loadedTables`/`loadedParams`
+   conviven); `renderMain()` en `src/main.js` dibuja ambos y resalta en cada
+   tabla la celda donde está operando el motor ahora mismo, emparejando el
+   título de cada eje con un parámetro en vivo por nombre (auto-match, con
+   selects manuales de respaldo si adivina mal). Cargar un `.bin` (nuevo
+   input opcional) muestra valores reales de celda en vez de solo offsets.
+   Ver `defs/example.xdf` + `defs/example_calibration.bin` para una demo
+   completa vía "Modo simulado". Aplica solo a la vista en vivo/simulada,
+   no a replay de CSV.
 6. Calibración real: esto requiere que el usuario tenga el hardware armado
    y probando contra su ECU. Espera iterar el timing/framing de ALDL varias
    veces basado en lo que el usuario reporte del hardware real.

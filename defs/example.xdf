@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<XDFFORMAT version="1.0">
+  <!--
+    Tabla de ejemplo para probar el "overlay en vivo": resaltar en la tabla
+    la celda donde está operando el motor ahora mismo, usando los datos de
+    defs/example.adx (o el modo simulado, que usa el mismo mapeo).
+
+    Los ejes se llaman "RPM" y "MAP (voltaje)" a propósito - son EXACTAMENTE
+    los mismos nombres que los <PARAMETER name="..."> de example.adx, para
+    que el auto-match encuentre el parámetro correcto sin que el usuario
+    tenga que elegirlo a mano.
+
+    Los valores de celda (grados de avance) son INVENTADOS para que se vean
+    plausibles en una TBI 2.8L (suben con RPM, bajan con carga/MAP) - no
+    salen de ningún binario real. Carga defs/example_calibration.bin (mismo
+    directorio) en el campo ".bin" para verlos; sin eso, la tabla solo
+    muestra su estructura (offsets).
+  -->
+  <XDFTABLE uniqueid="0x1000">
+    <title>Avance de encendido (ejemplo)</title>
+    <units>grados</units>
+    <xaxis>
+      <title>RPM</title>
+      <indexcount>6</indexcount>
+      <label index="0" value="500" />
+      <label index="1" value="1000" />
+      <label index="2" value="1500" />
+      <label index="3" value="2000" />
+      <label index="4" value="3000" />
+      <label index="5" value="4000" />
+    </xaxis>
+    <yaxis>
+      <title>MAP (voltaje)</title>
+      <indexcount>4</indexcount>
+      <label index="0" value="0.5" />
+      <label index="1" value="1.0" />
+      <label index="2" value="1.5" />
+      <label index="3" value="2.5" />
+    </yaxis>
+    <MATH equation="X" />
+    <EMBEDDEDDATA mmedoffset="0x00" mmedelementsizebits="8" />
+    <EMBEDDEDDATA mmedoffset="0x01" mmedelementsizebits="8" />
+    <EMBEDDEDDATA mmedoffset="0x02" mmedelementsizebits="8" />
+    <EMBEDDEDDATA mmedoffset="0x03" mmedelementsizebits="8" />
+    <EMBEDDEDDATA mmedoffset="0x04" mmedelementsizebits="8" />
+    <EMBEDDEDDATA mmedoffset="0x05" mmedelementsizebits="8" />
+    <EMBEDDEDDATA mmedoffset="0x06" mmedelementsizebits="8" />
+    <EMBEDDEDDATA mmedoffset="0x07" mmedelementsizebits="8" />
+    <EMBEDDEDDATA mmedoffset="0x08" mmedelementsizebits="8" />
+    <EMBEDDEDDATA mmedoffset="0x09" mmedelementsizebits="8" />
+    <EMBEDDEDDATA mmedoffset="0x0A" mmedelementsizebits="8" />
+    <EMBEDDEDDATA mmedoffset="0x0B" mmedelementsizebits="8" />
+    <EMBEDDEDDATA mmedoffset="0x0C" mmedelementsizebits="8" />
+    <EMBEDDEDDATA mmedoffset="0x0D" mmedelementsizebits="8" />
+    <EMBEDDEDDATA mmedoffset="0x0E" mmedelementsizebits="8" />
+    <EMBEDDEDDATA mmedoffset="0x0F" mmedelementsizebits="8" />
+    <EMBEDDEDDATA mmedoffset="0x10" mmedelementsizebits="8" />
+    <EMBEDDEDDATA mmedoffset="0x11" mmedelementsizebits="8" />
+    <EMBEDDEDDATA mmedoffset="0x12" mmedelementsizebits="8" />
+    <EMBEDDEDDATA mmedoffset="0x13" mmedelementsizebits="8" />
+    <EMBEDDEDDATA mmedoffset="0x14" mmedelementsizebits="8" />
+    <EMBEDDEDDATA mmedoffset="0x15" mmedelementsizebits="8" />
+    <EMBEDDEDDATA mmedoffset="0x16" mmedelementsizebits="8" />
+    <EMBEDDEDDATA mmedoffset="0x17" mmedelementsizebits="8" />
+  </XDFTABLE>
+</XDFFORMAT>

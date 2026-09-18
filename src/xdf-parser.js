@@ -14,15 +14,38 @@
  */
 
 export class ParsedTable {
-  constructor({ name, rows, cols, cells, units, xLabel, yLabel }) {
+  constructor({ name, rows, cols, cells, units, xLabel, yLabel, xAxis, yAxis, equation }) {
     this.name = name;
     this.rows = rows;
     this.cols = cols;
-    this.cells = cells; // array plano rows*cols de {rawOffset, equation}
+    this.cells = cells; // array plano rows*cols de {offset, bits}
     this.units = units;
     this.xLabel = xLabel;
     this.yLabel = yLabel;
+    this.xAxis = xAxis || Array.from({ length: cols }, (_, i) => i); // valores reales de breakpoint por columna (ej. RPM)
+    this.yAxis = yAxis || Array.from({ length: rows }, (_, i) => i); // valores reales de breakpoint por fila (ej. MAP)
+    this.equation = equation || "X";
   }
+
+  /** Valor real de la celda (row, col) leyendo `bin` (Uint8Array) en el offset de esa celda. null si no hay bin o falta la celda. */
+  valueAt(row, col, bin) {
+    if (!bin) return null;
+    const cell = this.cells[row * this.cols + col];
+    if (!cell) return null;
+    const raw = readCellRaw(bin, cell.offset, cell.bits);
+    if (raw == null) return null;
+    return evalEquation(this.equation, raw);
+  }
+}
+
+/** Lee el valor crudo de una celda desde un binario de calibración. Soporta 8 y 16 bits (big-endian, común en ECUs GM). */
+function readCellRaw(bin, offset, bits) {
+  if (offset == null || offset < 0 || offset >= bin.length) return null;
+  if (bits > 8) {
+    if (offset + 1 >= bin.length) return null;
+    return (bin[offset] << 8) | bin[offset + 1];
+  }
+  return bin[offset];
 }
 
 /** Interpola linealmente en una tabla [[raw, valor], ...] ordenada por raw ascendente. */
@@ -60,29 +83,35 @@ export class ParsedParameter {
     if (this.table && this.table.length) {
       return interpolateTable(this.table, rawValue);
     }
-
-    // Soporta expresiones lineales simples: X*a+b, X*a-b, X-a, X*a, X/a, X
-    // Se evita eval() real por seguridad; parseo manual de un patrón fijo.
-    const expr = this.equation.trim().replace(/\s+/g, "");
-    if (expr === "X") return rawValue;
-
-    const patterns = [
-      { re: /^X\*([\d.]+)\+([\d.]+)$/, fn: (m) => rawValue * parseFloat(m[1]) + parseFloat(m[2]) },
-      { re: /^X\*([\d.]+)-([\d.]+)$/, fn: (m) => rawValue * parseFloat(m[1]) - parseFloat(m[2]) },
-      { re: /^X\*([\d.]+)$/, fn: (m) => rawValue * parseFloat(m[1]) },
-      { re: /^X\/([\d.]+)$/, fn: (m) => rawValue / parseFloat(m[1]) },
-      { re: /^X\+([\d.]+)$/, fn: (m) => rawValue + parseFloat(m[1]) },
-      { re: /^X-([\d.]+)$/, fn: (m) => rawValue - parseFloat(m[1]) },
-    ];
-
-    for (const p of patterns) {
-      const m = expr.match(p.re);
-      if (m) return p.fn(m);
-    }
-
-    console.warn(`Ecuación no soportada aún: "${this.equation}", devolviendo valor crudo`);
-    return rawValue;
+    return evalEquation(this.equation, rawValue);
   }
+}
+
+/**
+ * Soporta expresiones lineales simples: X*a+b, X*a-b, X-a, X*a, X/a, X.
+ * Se evita eval() real por seguridad; parseo manual de un patrón fijo.
+ * Compartida entre ParsedParameter (bytes en vivo) y ParsedTable (celdas de bin).
+ */
+function evalEquation(equation, rawValue) {
+  const expr = equation.trim().replace(/\s+/g, "");
+  if (expr === "X") return rawValue;
+
+  const patterns = [
+    { re: /^X\*([\d.]+)\+([\d.]+)$/, fn: (m) => rawValue * parseFloat(m[1]) + parseFloat(m[2]) },
+    { re: /^X\*([\d.]+)-([\d.]+)$/, fn: (m) => rawValue * parseFloat(m[1]) - parseFloat(m[2]) },
+    { re: /^X\*([\d.]+)$/, fn: (m) => rawValue * parseFloat(m[1]) },
+    { re: /^X\/([\d.]+)$/, fn: (m) => rawValue / parseFloat(m[1]) },
+    { re: /^X\+([\d.]+)$/, fn: (m) => rawValue + parseFloat(m[1]) },
+    { re: /^X-([\d.]+)$/, fn: (m) => rawValue - parseFloat(m[1]) },
+  ];
+
+  for (const p of patterns) {
+    const m = expr.match(p.re);
+    if (m) return p.fn(m);
+  }
+
+  console.warn(`Ecuación no soportada aún: "${equation}", devolviendo valor crudo`);
+  return rawValue;
 }
 
 function textOf(el, selector, fallback = "") {
@@ -92,6 +121,29 @@ function textOf(el, selector, fallback = "") {
 
 function attrOf(el, name, fallback = "") {
   return el.hasAttribute(name) ? el.getAttribute(name) : fallback;
+}
+
+/**
+ * Breakpoints reales de un eje (ej. RPM: 500, 1000, 1500...) desde elementos
+ * <label index="N" value="V"/> hijos de <xaxis>/<yaxis>. Si el eje no trae
+ * labels (o no existe), cae a un índice sintético 0..count-1 - suficiente
+ * para ver la forma de la tabla, aunque el resaltado de "posición actual"
+ * ya no compare contra unidades reales en ese caso.
+ */
+function parseAxisBreakpoints(tableNode, axisSelector, count) {
+  const arr = Array.from({ length: count }, (_, i) => i);
+  const axisNode = tableNode.querySelector(axisSelector);
+  if (!axisNode) return arr;
+
+  const labels = axisNode.querySelectorAll("label");
+  if (!labels.length) return arr;
+
+  labels.forEach((l) => {
+    const idx = parseInt(attrOf(l, "index", "-1"), 10);
+    const val = parseFloat(attrOf(l, "value", "NaN"));
+    if (idx >= 0 && idx < count && !Number.isNaN(val)) arr[idx] = val;
+  });
+  return arr;
 }
 
 /** Parsea un XDF (definición de tablas de bin). Devuelve { tables: ParsedTable[] } */
@@ -106,7 +158,7 @@ export function parseXDF(xmlText) {
   const tableNodes = doc.querySelectorAll("XDFTABLE, TABLE");
 
   tableNodes.forEach((tableNode) => {
-    const name = attrOf(tableNode, "uniqueid") || textOf(tableNode, "title", "Tabla sin nombre");
+    const name = textOf(tableNode, "title") || attrOf(tableNode, "uniqueid") || "Tabla sin nombre";
     const rows = parseInt(textOf(tableNode, "yaxis > indexcount", "1"), 10) || 1;
     const cols = parseInt(textOf(tableNode, "xaxis > indexcount", "1"), 10) || 1;
 
@@ -130,10 +182,11 @@ export function parseXDF(xmlText) {
         units: textOf(tableNode, "units", ""),
         xLabel: textOf(tableNode, "xaxis > title", "X"),
         yLabel: textOf(tableNode, "yaxis > title", "Y"),
+        xAxis: parseAxisBreakpoints(tableNode, "xaxis", cols),
+        yAxis: parseAxisBreakpoints(tableNode, "yaxis", rows),
+        equation,
       })
     );
-
-    tables[tables.length - 1].equation = equation;
   });
 
   return { tables };

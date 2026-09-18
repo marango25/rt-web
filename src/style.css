@@ -261,6 +261,63 @@ table.data-table th {
   font-weight: 500;
 }
 
+.table-block {
+  margin-bottom: 28px;
+}
+
+.table-position-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+}
+
+.axis-match-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.axis-match-controls label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.axis-match-controls select {
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: #0f1113;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.data-table .cell-empty {
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+.data-table td.active-row,
+.data-table td.active-col {
+  background: rgba(95, 179, 163, 0.1);
+}
+
+.data-table td.active-cell {
+  background: rgba(95, 179, 163, 0.35);
+  color: #fff;
+  font-weight: 700;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.section-divider {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 24px 0;
+}
+
 .param-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
@@ -517,5 +574,15 @@ table.data-table th {
     margin-left: 0;
     width: 100%;
     justify-content: space-between;
+  }
+
+  .axis-match-controls {
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  table.data-table {
+    display: block;
+    overflow-x: auto;
   }
 }

@@ -20,6 +20,8 @@ let replayDragState = null; // { startX, startZoom, canvas } mientras se arrastr
 let currentReplayCanvases = []; // [{ key, canvas }] de la sesión de replay activa (para redibujar sin reconstruir el DOM)
 let currentSessionId = null; // id de la sesión que se está autoguardando en IndexedDB
 let sessionStartedAt = 0;
+let loadedBin = null; // Uint8Array del .bin de calibración cargado, o null (las tablas se ven "vacías" sin esto)
+let axisOverrides = {}; // `${tableIdx}:${axis}` -> id de parámetro elegido a mano, o "" para usar el auto-match
 let vehicleTag = "";
 try {
   vehicleTag = localStorage.getItem("rtweb_vehicle_tag") || "";
@@ -33,6 +35,7 @@ const AUTOSAVE_INTERVAL_MS = 5000;
 
 const el = {
   fileInput: document.getElementById("file-input"),
+  binInput: document.getElementById("bin-input"),
   hostInput: document.getElementById("host-input"),
   connectBtn: document.getElementById("connect-btn"),
   simBtn: document.getElementById("sim-btn"),
@@ -105,7 +108,7 @@ function applyFrame(rawBytes) {
 
   maybeAutosaveSession();
 
-  if (viewMode !== "replay") renderLiveParams();
+  if (viewMode !== "replay") renderMain();
 }
 
 function updateLogCount() {
@@ -332,13 +335,15 @@ el.fileInput.addEventListener("change", async (evt) => {
 
   try {
     if (format === "xdf") {
+      // Aditivo a propósito: no borra loadedParams. Así puedes cargar un
+      // .xdf (tablas) y un .adx (parámetros en vivo) juntos y ver el
+      // resaltado de "posición actual" sobre la tabla (overlay en vivo).
       loadedTables = parseXDF(text).tables;
-      loadedParams = [];
-      renderTables();
+      axisOverrides = {}; // los índices de tabla cambiaron, cualquier override viejo ya no aplica
+      renderMain();
     } else if (format === "adx") {
       await persistCurrentSession(); // guarda lo que quedó pendiente de la sesión anterior antes de reiniciar
       loadedParams = parseADX(text).parameters;
-      loadedTables = [];
       paramHistory = {};
       paramHistoryTimes = {};
       paramMeta = {};
@@ -346,7 +351,7 @@ el.fileInput.addEventListener("change", async (evt) => {
       updateLogCount();
       startNewSession();
       if (sim.running) sim.start(frameLengthForParams());
-      renderLiveParams();
+      renderMain();
     } else {
       alert("No reconozco el formato del archivo (¿es un .xdf o .adx válido?)");
     }
@@ -356,28 +361,142 @@ el.fileInput.addEventListener("change", async (evt) => {
   }
 });
 
-function renderTables() {
-  if (!loadedTables.length) {
-    el.main.innerHTML = `<div class="empty-state">Sin tablas cargadas.</div>`;
-    return;
+el.binInput.addEventListener("change", async (evt) => {
+  const file = evt.target.files[0];
+  if (!file) return;
+  try {
+    loadedBin = new Uint8Array(await file.arrayBuffer());
+    renderMain();
+  } catch (err) {
+    alert("Error al leer el binario: " + err.message);
+    console.error(err);
   }
+});
 
-  el.main.innerHTML = loadedTables
-    .map((t) => {
-      let rows = "";
+// --- Overlay: resaltar en la tabla el punto de operación actual -------------
+// La feature "estrella" original de TunerPro RT: mientras el motor corre (en
+// vivo o en modo simulado), ¿en qué celda de esta tabla está operando ahora
+// mismo el motor? Emparejamos cada eje (por su título, ej. "RPM") con un
+// parámetro del .adx cargado por nombre (auto-match), o el usuario lo elige
+// a mano si el auto-match falla o adivina mal.
+
+/** Quita acentos/puntuación y normaliza a minúsculas para comparar nombres de forma tolerante. */
+function normalizeLabel(s) {
+  return (s || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/** Busca el parámetro en vivo cuyo nombre se parece más al título de un eje. null si no hay nada razonable. */
+function matchParamForAxisLabel(label) {
+  const norm = normalizeLabel(label);
+  if (!norm || !loadedParams.length) return null;
+
+  const normWords = norm.split(" ").filter(Boolean);
+  let best = null;
+  let bestScore = 0;
+  loadedParams.forEach((p) => {
+    const pNorm = normalizeLabel(p.name);
+    if (!pNorm) return;
+    let score = 0;
+    if (pNorm === norm) score = 100;
+    else if (pNorm.includes(norm) || norm.includes(pNorm)) score = 60;
+    else {
+      const pWords = new Set(pNorm.split(" ").filter(Boolean));
+      const overlap = normWords.filter((w) => pWords.has(w)).length;
+      if (overlap) score = 20 + overlap * 10;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = p;
+    }
+  });
+  return bestScore >= 20 ? best : null;
+}
+
+/** Elección final de parámetro para un eje: lo que el usuario eligió a mano, si lo hizo; si no, el auto-match. */
+function resolveAxisParam(tableIdx, axis, autoMatch) {
+  const overrideId = axisOverrides[`${tableIdx}:${axis}`];
+  if (!overrideId) return autoMatch;
+  return loadedParams.find((p) => p.id === overrideId) || autoMatch;
+}
+
+/** Índice del breakpoint más cercano a `value` en un eje (array de números reales, ej. RPM). -1 si no aplica. */
+function nearestIndex(breakpoints, value) {
+  if (!breakpoints || !breakpoints.length || value === undefined || value === null || Number.isNaN(value)) return -1;
+  let bestI = -1;
+  let bestD = Infinity;
+  breakpoints.forEach((b, i) => {
+    const d = Math.abs(b - value);
+    if (d < bestD) {
+      bestD = d;
+      bestI = i;
+    }
+  });
+  return bestI;
+}
+
+function buildTablesHtml() {
+  return loadedTables
+    .map((t, idx) => {
+      const autoX = matchParamForAxisLabel(t.xLabel);
+      const autoY = matchParamForAxisLabel(t.yLabel);
+      const xParam = resolveAxisParam(idx, "x", autoX);
+      const yParam = resolveAxisParam(idx, "y", autoY);
+
+      const xVal = xParam ? currentValues[xParam.id] : undefined;
+      const yVal = yParam ? currentValues[yParam.id] : undefined;
+      const activeCol = xVal !== undefined ? nearestIndex(t.xAxis, xVal) : -1;
+      const activeRow = yVal !== undefined ? nearestIndex(t.yAxis, yVal) : -1;
+
+      const hint =
+        xParam && yParam && xVal !== undefined && yVal !== undefined
+          ? `Posición actual: ${t.xLabel} = ${xVal.toFixed(2)} ${xParam.units} (columna ${activeCol + 1}) · ${t.yLabel} = ${yVal.toFixed(2)} ${yParam.units} (fila ${activeRow + 1})`
+          : `Sin datos en vivo para resaltar esta tabla todavía — elige el parámetro de cada eje abajo, o carga un .adx con nombres parecidos a "${t.xLabel}" / "${t.yLabel}".`;
+
+      const paramOptionsHtml = (selectedId) =>
+        `<option value="">(auto)</option>` +
+        loadedParams.map((p) => `<option value="${p.id}"${p.id === selectedId ? " selected" : ""}>${p.name}</option>`).join("");
+
+      const headerRow = `<tr><th></th>${t.xAxis.map((v) => `<th>${v}</th>`).join("")}</tr>`;
+
+      let bodyRows = "";
       for (let r = 0; r < t.rows; r++) {
-        rows += "<tr>";
+        bodyRows += `<tr><th>${t.yAxis[r]}</th>`;
         for (let c = 0; c < t.cols; c++) {
-          rows += `<td>${t.cells[r * t.cols + c]?.offset ?? "-"}</td>`;
+          const val = t.valueAt(r, c, loadedBin);
+          const cell = t.cells[r * t.cols + c];
+          const display = val !== null ? val.toFixed(1) : cell ? `<span class="cell-empty">off ${cell.offset}</span>` : "-";
+          const classes = ["td-cell"];
+          if (r === activeRow && c === activeCol) classes.push("active-cell");
+          else if (r === activeRow) classes.push("active-row");
+          else if (c === activeCol) classes.push("active-col");
+          bodyRows += `<td class="${classes.join(" ")}">${display}</td>`;
         }
-        rows += "</tr>";
+        bodyRows += "</tr>";
       }
+
       return `
-        <h3>${t.name} <span style="color:var(--text-dim);font-size:12px;">(${t.units || "sin unidad"})</span></h3>
-        <table class="data-table"><tbody>${rows}</tbody></table>
+        <div class="table-block">
+          <h3>${t.name} <span style="color:var(--text-dim);font-size:12px;">(${t.units || "sin unidad"})</span></h3>
+          <div class="table-position-hint">${hint}</div>
+          <div class="axis-match-controls">
+            <label>Eje X (${t.xLabel}):
+              <select class="axis-select" data-table-idx="${idx}" data-axis="x">${paramOptionsHtml(axisOverrides[`${idx}:x`] || "")}</select>
+            </label>
+            <label>Eje Y (${t.yLabel}):
+              <select class="axis-select" data-table-idx="${idx}" data-axis="y">${paramOptionsHtml(axisOverrides[`${idx}:y`] || "")}</select>
+            </label>
+          </div>
+          <table class="data-table"><thead>${headerRow}</thead><tbody>${bodyRows}</tbody></table>
+          ${!loadedBin ? `<div class="hint">Sin binario (.bin) cargado — mostrando offsets, no valores reales de calibración.</div>` : ""}
+        </div>
       `;
     })
-    .join("<br/>");
+    .join("");
 }
 
 /** Evalúa alertas de rango y "valor congelado" para un parámetro. Devuelve { outOfRange, isStuck, stuckSec }. */
@@ -401,13 +520,7 @@ function evaluateAlerts(p, value, now) {
   return { outOfRange, isStuck, stuckSec };
 }
 
-function renderLiveParams() {
-  if (!loadedParams.length) {
-    el.main.innerHTML = `<div class="empty-state">Sin definición ADX cargada. Carga un .adx para ver parámetros en vivo.</div>`;
-    updateAlertBanner([]);
-    return;
-  }
-
+function buildLiveHtml() {
   const now = Date.now();
   const expanded = loadedParams.find((p) => p.id === expandedParamId);
   const alerts = [];
@@ -443,7 +556,7 @@ function renderLiveParams() {
 
   updateAlertBanner(alerts);
 
-  el.main.innerHTML = `
+  return `
     <h3>Parámetros en vivo <span style="color:var(--text-dim);font-size:12px;font-weight:400;">(clic en una tarjeta para ampliar su gráfica)</span></h3>
     ${
       expanded
@@ -462,21 +575,45 @@ function renderLiveParams() {
       ${cardsHtml}
     </div>
   `;
+}
 
+function wireLiveSection() {
   loadedParams.forEach((p) => {
     const canvas = el.main.querySelector(`.param-card[data-param-id="${CSS.escape(p.id)}"] canvas.sparkline`);
     drawChart(canvas, paramHistory[p.id]);
   });
 
+  const expanded = loadedParams.find((p) => p.id === expandedParamId);
   if (expanded) {
     const bigCanvas = el.main.querySelector("canvas.sparkline-big");
     drawChart(bigCanvas, paramHistory[expanded.id], { showLabels: true });
     el.main.querySelector(".close-chart").addEventListener("click", (e) => {
       e.stopPropagation();
       expandedParamId = null;
-      renderLiveParams();
+      renderMain();
     });
   }
+}
+
+/**
+ * Punto de entrada único de render para las vistas "en vivo"/"tablas" (todo
+ * lo que no sea replay, que tiene su propio renderReplay()). Muestra tablas
+ * y parámetros en vivo a la vez cuando ambos están cargados - así la tabla
+ * puede resaltar la celda donde está operando el motor ahora mismo.
+ */
+function renderMain() {
+  if (!loadedTables.length && !loadedParams.length) {
+    el.main.innerHTML = `<div class="empty-state">Carga una definición para empezar.</div>`;
+    updateAlertBanner([]);
+    return;
+  }
+
+  const tablesHtml = loadedTables.length ? buildTablesHtml() : "";
+  const liveHtml = loadedParams.length ? buildLiveHtml() : "";
+  el.main.innerHTML = tablesHtml + (tablesHtml && liveHtml ? `<hr class="section-divider" />` : "") + liveHtml;
+
+  if (loadedParams.length) wireLiveSection();
+  else updateAlertBanner([]);
 }
 
 // --- Banner de alertas flotante ---------------------------------------------
@@ -970,9 +1107,7 @@ function renderReplay() {
   if (!a) {
     viewMode = "live";
     currentReplayCanvases = [];
-    if (loadedParams.length) renderLiveParams();
-    else if (loadedTables.length) renderTables();
-    else el.main.innerHTML = `<div class="empty-state">Carga una definición para empezar.</div>`;
+    renderMain();
     return;
   }
 
@@ -1066,7 +1201,16 @@ el.main.addEventListener("click", (evt) => {
   if (!card) return;
   const id = card.dataset.paramId;
   expandedParamId = expandedParamId === id ? null : id;
-  renderLiveParams();
+  renderMain();
+});
+
+// Selector manual de a qué parámetro en vivo corresponde cada eje de una
+// tabla, para cuando el auto-match (por nombre) falla o adivina mal.
+el.main.addEventListener("change", (evt) => {
+  const sel = evt.target.closest(".axis-select");
+  if (!sel) return;
+  axisOverrides[`${sel.dataset.tableIdx}:${sel.dataset.axis}`] = sel.value;
+  renderMain();
 });
 
 // Tooltip al pasar el cursor sobre las gráficas en vivo (tarjetas pequeñas y
@@ -1110,6 +1254,6 @@ el.main.addEventListener("mouseout", (evt) => {
 });
 
 updateLogCount();
-renderLiveParams();
+renderMain();
 startNewSession();
 refreshSessionList();

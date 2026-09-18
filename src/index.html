@@ -26,6 +26,13 @@
       <div class="field">
         <label for="file-input">Cargar definición (.xdf / .adx)</label>
         <input id="file-input" type="file" accept=".xdf,.adx,.xml" />
+        <div class="hint">Puedes cargar ambos (uno tras otro): un .xdf de tablas y un .adx de parámetros en vivo. Con los dos cargados, la tabla resalta en qué celda está operando el motor ahora mismo.</div>
+      </div>
+
+      <div class="field">
+        <label for="bin-input">Binario de calibración (.bin) — opcional</label>
+        <input id="bin-input" type="file" accept=".bin" />
+        <div class="hint">Solo para ver valores reales en las celdas de una tabla .xdf. Sin esto, la tabla muestra su estructura (offsets) pero no valores.</div>
       </div>
 
       <div class="field">
