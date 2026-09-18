@@ -78,8 +78,15 @@ y conectar con la llave en "on" para probar contra el auto real.
    (`ws-client.js`/`main.js`) ya lee ese campo y muestra una alerta roja si
    llegan frames en modo 8192, para no confundirlos con datos reales del
    Sonoma.
-4. Checksum / comparador de binarios (funcionalidad de TunerPro aún no
-   portada).
+4. ~~Checksum / comparador de binarios~~ — HECHO: sección nueva en la
+   sidebar ("Comparar binarios (.bin)", Binario A/B) que activa una vista
+   dedicada (`viewMode = "bindiff"` en `src/main.js`, mismo patrón que
+   replay). Muestra checksums genéricos (suma 8 bits, suma 16 bits, CRC32 -
+   **no** el checksum interno real del 1228062, que no está documentado
+   acá) y, si difieren, la lista byte a byte de diferencias con el offset;
+   si hay una tabla `.xdf` cargada, anota en qué celda cae cada diferencia
+   (probado con `defs/example.xdf` + una copia mutada de
+   `example_calibration.bin`: ubicó las 2 celdas modificadas correctamente).
 5. ~~Overlay del log en vivo sobre las tablas del XDF~~ — HECHO: cargar un
    .xdf y un .adx a la vez ya no se pisan (`loadedTables`/`loadedParams`
    conviven); `renderMain()` en `src/main.js` dibuja ambos y resalta en cada

@@ -13,7 +13,8 @@ let expandedParamId = null; // id del parámetro con vista de gráfica grande ab
 let sessionLog = []; // { t, values, raw, evento } por cada frame recibido - sin límite, para descargar como CSV
 let activeFlags = new Set(); // accesorios marcados como encendidos ahora mismo (checkboxes)
 let otherFlagText = ""; // texto libre del campo "Otro"
-let viewMode = "live"; // "live" | "replay" - replay se activa al cargar un CSV guardado
+let viewMode = "live"; // "live" | "replay" | "bindiff" - se activan al cargar un CSV/bin guardado
+let binDiffFiles = { A: null, B: null }; // { name, bytes: Uint8Array } por slot, para el comparador de binarios
 let replayLogs = { A: null, B: null }; // { name, columns: [{key, units}], rows: [{t, values}] }
 let replayZoom = { start: 0, end: 1 }; // fracciones 0..1 - ventana visible, compartida por todas las gráficas del replay
 let replayDragState = null; // { startX, startZoom, canvas } mientras se arrastra, o null
@@ -49,6 +50,9 @@ const el = {
   replayInputA: document.getElementById("replay-input-a"),
   replayInputB: document.getElementById("replay-input-b"),
   replayClearBtn: document.getElementById("replay-clear-btn"),
+  bindiffInputA: document.getElementById("bindiff-input-a"),
+  bindiffInputB: document.getElementById("bindiff-input-b"),
+  bindiffClearBtn: document.getElementById("bindiff-clear-btn"),
   vehicleTagInput: document.getElementById("vehicle-tag-input"),
   sessionVehicleFilter: document.getElementById("session-vehicle-filter"),
   sessionList: document.getElementById("session-list"),
@@ -115,7 +119,7 @@ function applyFrame(rawBytes, t, proto) {
 
   maybeAutosaveSession();
 
-  if (viewMode !== "replay") renderMain();
+  if (viewMode === "live") renderMain();
 }
 
 function updateLogCount() {
@@ -1198,6 +1202,160 @@ el.replayClearBtn.addEventListener("click", () => {
   renderReplay();
 });
 
+// --- Comparador de binarios (checksum + diff byte a byte) ------------------
+// Funcionalidad de TunerPro aún no portada: comparar dos .bin de calibración.
+// No conocemos el checksum interno real de este ECM (requeriría documentación
+// específica del 1228062 que no tenemos) - los checksums de acá son genéricos
+// (suma de 8/16 bits, CRC32), útiles para confirmar si dos binarios son
+// idénticos o no, no para "arreglar" el checksum propio de la ECU.
+
+let crc32Table = null;
+function crc32(bytes) {
+  if (!crc32Table) {
+    crc32Table = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      crc32Table[n] = c >>> 0;
+    }
+  }
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) crc = crc32Table[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function binChecksums(bytes) {
+  let sum8 = 0;
+  let sum16 = 0;
+  for (let i = 0; i < bytes.length; i++) {
+    sum8 = (sum8 + bytes[i]) & 0xff;
+    sum16 = (sum16 + bytes[i]) & 0xffff;
+  }
+  return { sum8, sum16, crc32: crc32(bytes) };
+}
+
+function hexPad(n, width = 2) {
+  return n.toString(16).toUpperCase().padStart(width, "0");
+}
+
+/** offset de celda -> {table, row, col}, para anotar en el diff en qué celda de una tabla .xdf cae. */
+function buildTableOffsetIndex() {
+  const map = new Map();
+  loadedTables.forEach((t) => {
+    for (let r = 0; r < t.rows; r++) {
+      for (let c = 0; c < t.cols; c++) {
+        const cell = t.cells[r * t.cols + c];
+        if (cell) map.set(cell.offset, { table: t, row: r, col: c });
+      }
+    }
+  });
+  return map;
+}
+
+function computeBinDiff(a, b) {
+  const len = Math.max(a.length, b.length);
+  const diffs = [];
+  for (let i = 0; i < len; i++) {
+    const va = i < a.length ? a[i] : null;
+    const vb = i < b.length ? b[i] : null;
+    if (va !== vb) diffs.push({ offset: i, a: va, b: vb });
+  }
+  return diffs;
+}
+
+function checksumRowHtml(label, cs) {
+  return `<tr><th>${label}</th><td>0x${hexPad(cs.sum8)}</td><td>0x${hexPad(cs.sum16, 4)}</td><td>0x${hexPad(cs.crc32, 8)}</td></tr>`;
+}
+
+function renderBinDiff() {
+  const a = binDiffFiles.A;
+  const b = binDiffFiles.B;
+  if (!a) {
+    viewMode = "live";
+    renderMain();
+    return;
+  }
+
+  viewMode = "bindiff";
+  updateAlertBanner([]);
+
+  let html = `
+    <h3>Comparador de binarios</h3>
+    <div class="replay-legend">
+      <span>A: ${a.name} (${a.bytes.length} bytes)</span>
+      ${b ? `<span>B: ${b.name} (${b.bytes.length} bytes)</span>` : ""}
+    </div>
+    <table class="data-table" style="max-width:560px;margin-bottom:16px;">
+      <thead><tr><th></th><th>Suma 8 bits</th><th>Suma 16 bits</th><th>CRC32</th></tr></thead>
+      <tbody>
+        ${checksumRowHtml("A", binChecksums(a.bytes))}
+        ${b ? checksumRowHtml("B", binChecksums(b.bytes)) : ""}
+      </tbody>
+    </table>
+  `;
+
+  if (!b) {
+    html += `<div class="hint">Carga un segundo binario (Binario B) para ver las diferencias byte a byte.</div>`;
+  } else if (a.bytes.length === b.bytes.length && a.bytes.every((v, i) => v === b.bytes[i])) {
+    html += `<div class="hint">Los dos binarios son idénticos, byte por byte.</div>`;
+  } else {
+    const diffs = computeBinDiff(a.bytes, b.bytes);
+    const offsetIndex = buildTableOffsetIndex();
+    const maxLen = Math.max(a.bytes.length, b.bytes.length);
+    const pct = ((diffs.length / maxLen) * 100).toFixed(2);
+    const sizeNote =
+      a.bytes.length !== b.bytes.length
+        ? " — los binarios tienen tamaños distintos, se compararon hasta el más largo (offsets sin dato en uno de los dos se muestran como «—»)."
+        : "";
+    html += `<div class="hint" style="margin-bottom:10px;">${diffs.length} bytes distintos de ${maxLen} (${pct}%)${sizeNote}</div>`;
+
+    const shown = diffs.slice(0, 500);
+    const rows = shown
+      .map((d) => {
+        const loc = offsetIndex.get(d.offset);
+        const locText = loc ? `${loc.table.name} [fila ${loc.row + 1}, col ${loc.col + 1}]` : "";
+        return `<tr>
+          <td>0x${hexPad(d.offset, 4)} (${d.offset})</td>
+          <td>${d.a === null ? "—" : "0x" + hexPad(d.a)}</td>
+          <td>${d.b === null ? "—" : "0x" + hexPad(d.b)}</td>
+          <td style="text-align:left;">${locText}</td>
+        </tr>`;
+      })
+      .join("");
+
+    html += `
+      <table class="data-table">
+        <thead><tr><th>Offset</th><th>A</th><th>B</th><th style="text-align:left;">En tabla .xdf cargada</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      ${diffs.length > shown.length ? `<div class="hint">Mostrando las primeras ${shown.length} diferencias de ${diffs.length}.</div>` : ""}
+    `;
+  }
+
+  el.main.innerHTML = html;
+}
+
+async function handleBinDiffFile(file, slot) {
+  if (!file) return;
+  try {
+    binDiffFiles[slot] = { name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) };
+    renderBinDiff();
+  } catch (err) {
+    alert("Error al leer el binario: " + err.message);
+    console.error(err);
+  }
+}
+
+el.bindiffInputA.addEventListener("change", (evt) => handleBinDiffFile(evt.target.files[0], "A"));
+el.bindiffInputB.addEventListener("change", (evt) => handleBinDiffFile(evt.target.files[0], "B"));
+
+el.bindiffClearBtn.addEventListener("click", () => {
+  binDiffFiles = { A: null, B: null };
+  el.bindiffInputA.value = "";
+  el.bindiffInputB.value = "";
+  renderBinDiff();
+});
+
 // --- Log de sesión ---------------------------------------------------------
 
 el.downloadLogBtn.addEventListener("click", downloadLog);
@@ -1210,7 +1368,7 @@ el.clearLogBtn.addEventListener("click", async () => {
 });
 
 el.main.addEventListener("click", (evt) => {
-  if (viewMode === "replay") return;
+  if (viewMode !== "live") return;
   const card = evt.target.closest(".param-card");
   if (!card) return;
   const id = card.dataset.paramId;
@@ -1240,7 +1398,7 @@ function liveParamForCanvas(canvas) {
 }
 
 el.main.addEventListener("mousemove", (evt) => {
-  if (viewMode === "replay") return;
+  if (viewMode !== "live") return;
   const canvas = evt.target.closest("canvas.sparkline, canvas.sparkline-big");
   if (!canvas) return;
   const param = liveParamForCanvas(canvas);
