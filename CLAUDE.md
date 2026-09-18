@@ -66,7 +66,18 @@ y conectar con la llave en "on" para probar contra el auto real.
    pipeline `onFrame` que usa `ws-client.js`, vía el botón "Modo simulado"
    en la sidebar. No pisa la conexión real (cada uno detiene al otro).
 2. Vista de superficie 3D (Three.js) para tablas XDF.
-3. Autodetección de protocolo (160 vs 8192 baud) en el firmware.
+3. ~~Autodetección de protocolo (160 vs 8192 baud) en el firmware~~ — HECHO:
+   `esp8266_aldl_bridge.ino` prueba 160 baud primero (confirmado en el
+   Sonoma) y, tras `ALDL_PROTO_FAILURES_BEFORE_SWITCH` intentos fallidos
+   seguidos, alterna a intentar 8192 baud (`readAldlFrame8192`, UART
+   estándar 8N1 por bit, distinto al esquema de ancho de pulso de 160 baud).
+   **Importante:** el modo 8192 solo detecta actividad con forma de UART
+   válida y manda bytes crudos con `"proto":"8192"` en el JSON - NO tiene
+   frame/PROM ID/checksum validado (nunca se probó contra una ECU real que
+   lo use), a diferencia de 160 baud que sí está confirmado. La web app
+   (`ws-client.js`/`main.js`) ya lee ese campo y muestra una alerta roja si
+   llegan frames en modo 8192, para no confundirlos con datos reales del
+   Sonoma.
 4. Checksum / comparador de binarios (funcionalidad de TunerPro aún no
    portada).
 5. ~~Overlay del log en vivo sobre las tablas del XDF~~ — HECHO: cargar un

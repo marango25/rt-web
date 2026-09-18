@@ -22,6 +22,8 @@ let currentSessionId = null; // id de la sesión que se está autoguardando en I
 let sessionStartedAt = 0;
 let loadedBin = null; // Uint8Array del .bin de calibración cargado, o null (las tablas se ven "vacías" sin esto)
 let axisOverrides = {}; // `${tableIdx}:${axis}` -> id de parámetro elegido a mano, o "" para usar el auto-match
+let lastFrameProto = "160"; // el firmware autodetecta 160/8192 baud y lo manda en cada frame (ver ws-client.js) -
+                             // "8192" son bytes crudos sin frame/checksum validado, no decodificados de verdad
 let vehicleTag = "";
 try {
   vehicleTag = localStorage.getItem("rtweb_vehicle_tag") || "";
@@ -65,7 +67,12 @@ function bytesToHex(bytes) {
   return bytes.map((b) => (b & 0xff).toString(16).padStart(2, "0")).join(" ");
 }
 
-function applyFrame(rawBytes) {
+function applyFrame(rawBytes, t, proto) {
+  if (proto && proto !== lastFrameProto) {
+    console.warn(`Protocolo ALDL cambió a "${proto}" - ver el aviso en la vista en vivo.`);
+  }
+  if (proto) lastFrameProto = proto;
+
   const now = Date.now();
   const outOfRangeLabels = []; // columna propia "fuera_de_rango" en el CSV
   const stuckLabels = []; // se suman a la columna "evento", junto a lo marcado manualmente
@@ -553,6 +560,13 @@ function buildLiveHtml() {
       `;
     })
     .join("");
+
+  if (lastFrameProto === "8192") {
+    alerts.unshift({
+      type: "range",
+      text: `El ESP8266 está leyendo en modo 8192 baud, no 160 - estos valores son bytes crudos sin decodificar de verdad (el .adx cargado asume 160 baud). Probablemente el ECU conectado no es el Sonoma A040.`,
+    });
+  }
 
   updateAlertBanner(alerts);
 
