@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ADXFORMAT version="1.0">
+  <ecu>GM_ALDL_160_EXAMPLE - mismo mapeo que gmc_sonoma_1993_a040.adx (para demo/pruebas)</ecu>
+  <!--
+    Este archivo es solo para probar la web SIN hardware: cárgalo y activa
+    "Modo simulado". Usa el mismo mapeo de bytes que la definición real del
+    vehículo del usuario (defs/gmc_sonoma_1993_a040.adx) a propósito, porque
+    sim-source.js genera valores realistas (tomados de capturas reales de
+    ralentí) justo para esos byte-index - así se ve como si la camioneta
+    estuviera conectada de verdad, en vez de valores random tipo RPM=13000.
+
+    Si necesitas un archivo de ejemplo con OTRO mapeo (para probar con una
+    ECU distinta), la definición real y su historial de depuración completo
+    están en defs/gmc_sonoma_1993_a040.adx.
+  -->
+  <PARAMETERGROUP name="Motor">
+    <PARAMETER id="rpm" name="RPM" units="rpm" byteindex="7" bytelength="1" equation="X*25" />
+    <PARAMETER id="coolant_c" name="Temperatura refrigerante" units="C" byteindex="4" bytelength="1" table="coolant_c" />
+    <PARAMETER id="tps_v" name="TPS (voltaje)" units="V" byteindex="8" bytelength="1" equation="X*0.0196" />
+    <PARAMETER id="map_v" name="MAP (voltaje)" units="V" byteindex="6" bytelength="1" equation="X*0.0196" />
+    <PARAMETER id="iac" name="Posicion IAC" units="Steps" byteindex="3" bytelength="1" equation="X" />
+    <PARAMETER id="speed" name="Velocidad del vehiculo" units="MPH" byteindex="5" bytelength="1" equation="X" />
+  </PARAMETERGROUP>
+
+  <PARAMETERGROUP name="Combustible / O2">
+    <PARAMETER id="o2" name="Sensor O2" units="mV" byteindex="10" bytelength="1" equation="X*4.44" flatalert="true" />
+    <PARAMETER id="int" name="Integrator (INT)" units="" byteindex="9" bytelength="1" equation="X" warnmin="100" warnmax="150" />
+    <PARAMETER id="blm" name="Block Learn (BLM)" units="" byteindex="18" bytelength="1" equation="X" warnmin="100" warnmax="150" />
+    <PARAMETER id="rl_trans" name="Transiciones Rico/Pobre" units="Transitions" byteindex="19" bytelength="1" equation="X" />
+    <PARAMETER id="knock" name="Contador de detonacion" units="" byteindex="17" bytelength="1" equation="X" />
+  </PARAMETERGROUP>
+
+  <PARAMETERGROUP name="Electrico">
+    <PARAMETER id="batt" name="Voltaje bateria" units="V" byteindex="15" bytelength="1" equation="X*0.1" />
+  </PARAMETERGROUP>
+
+  <LOOKUPTABLE id="coolant_c">
+    <ENTRY raw="12" value="150.00" />
+    <ENTRY raw="13" value="145.00" />
+    <ENTRY raw="14" value="140.00" />
+    <ENTRY raw="16" value="135.00" />
+    <ENTRY raw="18" value="130.00" />
+    <ENTRY raw="21" value="125.00" />
+    <ENTRY raw="23" value="120.00" />
+    <ENTRY raw="26" value="115.00" />
+    <ENTRY raw="30" value="110.00" />
+    <ENTRY raw="34" value="105.00" />
+    <ENTRY raw="39" value="100.00" />
+    <ENTRY raw="44" value="95.00" />
+    <ENTRY raw="50" value="90.00" />
+    <ENTRY raw="56" value="85.00" />
+    <ENTRY raw="64" value="80.00" />
+    <ENTRY raw="72" value="75.00" />
+    <ENTRY raw="81" value="70.00" />
+    <ENTRY raw="92" value="65.00" />
+    <ENTRY raw="102" value="60.00" />
+    <ENTRY raw="114" value="55.00" />
+    <ENTRY raw="126" value="50.00" />
+    <ENTRY raw="139" value="45.00" />
+    <ENTRY raw="152" value="40.00" />
+    <ENTRY raw="165" value="35.00" />
+    <ENTRY raw="177" value="30.00" />
+    <ENTRY raw="189" value="25.00" />
+    <ENTRY raw="199" value="20.00" />
+    <ENTRY raw="209" value="15.00" />
+    <ENTRY raw="218" value="10.00" />
+    <ENTRY raw="225" value="5.00" />
+    <ENTRY raw="231" value="0.00" />
+    <ENTRY raw="237" value="-5.00" />
+    <ENTRY raw="241" value="-10.00" />
+    <ENTRY raw="245" value="-15.00" />
+    <ENTRY raw="247" value="-20.00" />
+    <ENTRY raw="250" value="-25.00" />
+    <ENTRY raw="251" value="-30.00" />
+    <ENTRY raw="253" value="-40.00" />
+  </LOOKUPTABLE>
+</ADXFORMAT>

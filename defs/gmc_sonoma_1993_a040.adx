@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ADXFORMAT version="1.0">
+  <ecu>GM ECM 1228062 - GMC Sonoma 1993 2.8L TBI (LL2) - definicion ALDL "A040"</ecu>
+  <!--
+    Convertido a mano el 2026-09-15 desde A040.ads (formato WinALDL/ScannerPro,
+    autor original: Robert Saar). El .ads describe: 160 baud, "iNumBytesInPayload=20".
+
+    HISTORIAL DE DEPURACIÓN DE OFFSETS (déjalo aquí, costó dos vueltas):
+    1. Primera versión: byteindex = btByteNumber_original - 1. Con captura real
+       "llave en ON, motor apagado" dio valores que PARECÍAN mal (RPM~5000,
+       batería 0V) -> se cambió a byteindex = btByteNumber_original (sin restar).
+    2. Esa "corrección" fue un error: con el motor apagado casi cualquier
+       mapeo da valores creíbles (todo está en cero/estático), así que no era
+       una prueba confiable. Con el motor REALMENTE encendido (captura larga,
+       2026-09-15) se ve clarísimo: IAC bajando suave, temperatura subiendo
+       suave (motor calentando), MAP cayendo de ~4.3V a ~1.2V justo cuando el
+       motor prende, RPM saltando a ~1500 y asentándose en ~1000 - un patrón
+       físico perfecto - y SOLO calza con la resta original (byteindex =
+       btByteNumber_original - 1). Quedó así definitivamente. ALDL_FRAME_BYTES
+       volvió a 20 en el firmware (ya no 21).
+    3. Bug real encontrado en esa misma captura: de vez en cuando el firmware
+       "engancha" un SYNC falso positivo (ruido) y captura 20 bytes que NO
+       arrancan en el lugar correcto - un frame entero desalineado, no ruido
+       bit a bit. Eso es lo que se veía como "80mph estando quieto" o "13000
+       RPM". El firmware ahora valida el PROM ID (constante, bytes 1-2) antes
+       de mandar cada frame, y descarta los que no calzan.
+
+    NO incluido (limitación actual de este proyecto, no del archivo original):
+      - PROM ID (16 bits, bytes 1-2 de este archivo): es un ID estático de la
+        ROM, no un sensor en vivo, y además requeriría ensamblar 2 bytes -
+        byteLength>1 todavía no se combina en applyFrame() (main.js solo lee
+        un byte). Sí se usa en el firmware (ALDL_PROM_ID_HI/LO) para validar
+        que un frame esté bien alineado antes de mandarlo.
+      - Toda la sección BITS del .ads: banderas de 1 bit (códigos de falla,
+        loop status abierto/cerrado, P/N switch, TCC, A/C request, etc.) -
+        son flags booleanos dentro de un byte, un tipo de parámetro que este
+        proyecto todavía no soporta (solo valores numéricos por byte/ecuación
+        o tabla). El .ads original completo quedó en ~/Downloads/A040.ads si
+        se necesita agregar soporte a esto más adelante.
+
+    Esto SÍ es un mapeo real de un ECM real (a diferencia de defs/example.adx,
+    que es inventado), y ya validado contra una captura larga con el motor
+    encendido de verdad, no solo con la llave en ON.
+  -->
+  <PARAMETERGROUP name="Motor">
+    <PARAMETER id="rpm" name="RPM" units="rpm" byteindex="7" bytelength="1" equation="X*25" />
+    <PARAMETER id="coolant_c" name="Temperatura refrigerante" units="C" byteindex="4" bytelength="1" table="coolant_c" />
+    <PARAMETER id="tps_v" name="TPS (voltaje)" units="V" byteindex="8" bytelength="1" equation="X*0.0196" />
+    <PARAMETER id="map_v" name="MAP (voltaje)" units="V" byteindex="6" bytelength="1" equation="X*0.0196" />
+    <PARAMETER id="iac" name="Posicion IAC" units="Steps" byteindex="3" bytelength="1" equation="X" />
+    <PARAMETER id="speed" name="Velocidad del vehiculo" units="MPH" byteindex="5" bytelength="1" equation="X" />
+  </PARAMETERGROUP>
+
+  <PARAMETERGROUP name="Combustible / O2">
+    <!-- flatalert: si el O2 no cambia de valor por varios segundos con el motor
+         encendido, la tarjeta se marca como "sin cambios" - es justo el síntoma
+         que se está investigando (sensor "pegado"/enfriado). -->
+    <PARAMETER id="o2" name="Sensor O2" units="mV" byteindex="10" bytelength="1" equation="X*4.44" flatalert="true" />
+    <!-- warnmin/warnmax: rango heurístico de "closed loop sano" (no es spec de
+         fábrica), solo para resaltar cuando el ECM está corrigiendo mucho más
+         de lo normal en cualquier dirección. Ajustar si da falsos positivos. -->
+    <PARAMETER id="int" name="Integrator (INT)" units="" byteindex="9" bytelength="1" equation="X" warnmin="100" warnmax="150" />
+    <PARAMETER id="blm" name="Block Learn (BLM)" units="" byteindex="18" bytelength="1" equation="X" warnmin="100" warnmax="150" />
+    <PARAMETER id="rl_trans" name="Transiciones Rico/Pobre" units="Transitions" byteindex="19" bytelength="1" equation="X" />
+    <PARAMETER id="knock" name="Contador de detonacion" units="" byteindex="17" bytelength="1" equation="X" />
+  </PARAMETERGROUP>
+
+  <PARAMETERGROUP name="Electrico">
+    <PARAMETER id="batt" name="Voltaje bateria" units="V" byteindex="15" bytelength="1" equation="X*0.1" />
+  </PARAMETERGROUP>
+
+  <LOOKUPTABLE id="coolant_c">
+    <ENTRY raw="12" value="150.00" />
+    <ENTRY raw="13" value="145.00" />
+    <ENTRY raw="14" value="140.00" />
+    <ENTRY raw="16" value="135.00" />
+    <ENTRY raw="18" value="130.00" />
+    <ENTRY raw="21" value="125.00" />
+    <ENTRY raw="23" value="120.00" />
+    <ENTRY raw="26" value="115.00" />
+    <ENTRY raw="30" value="110.00" />
+    <ENTRY raw="34" value="105.00" />
+    <ENTRY raw="39" value="100.00" />
+    <ENTRY raw="44" value="95.00" />
+    <ENTRY raw="50" value="90.00" />
+    <ENTRY raw="56" value="85.00" />
+    <ENTRY raw="64" value="80.00" />
+    <ENTRY raw="72" value="75.00" />
+    <ENTRY raw="81" value="70.00" />
+    <ENTRY raw="92" value="65.00" />
+    <ENTRY raw="102" value="60.00" />
+    <ENTRY raw="114" value="55.00" />
+    <ENTRY raw="126" value="50.00" />
+    <ENTRY raw="139" value="45.00" />
+    <ENTRY raw="152" value="40.00" />
+    <ENTRY raw="165" value="35.00" />
+    <ENTRY raw="177" value="30.00" />
+    <ENTRY raw="189" value="25.00" />
+    <ENTRY raw="199" value="20.00" />
+    <ENTRY raw="209" value="15.00" />
+    <ENTRY raw="218" value="10.00" />
+    <ENTRY raw="225" value="5.00" />
+    <ENTRY raw="231" value="0.00" />
+    <ENTRY raw="237" value="-5.00" />
+    <ENTRY raw="241" value="-10.00" />
+    <ENTRY raw="245" value="-15.00" />
+    <ENTRY raw="247" value="-20.00" />
+    <ENTRY raw="250" value="-25.00" />
+    <ENTRY raw="251" value="-30.00" />
+    <ENTRY raw="253" value="-40.00" />
+  </LOOKUPTABLE>
+</ADXFORMAT>
