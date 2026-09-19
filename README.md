@@ -10,7 +10,8 @@ rt-web/
 │   ├── index.html
 │   ├── style.css
 │   ├── xdf-parser.js             # Parser de XDF/ADX (formato XML de TunerPro)
-│   ├── ws-client.js              # Cliente WebSocket hacia el ESP8266
+│   ├── ws-client.js              # Cliente WebSocket hacia el ESP8266 (modo WiFi)
+│   ├── serial-client.js          # Lee los frames por USB con Web Serial (modo USB, sin WiFi)
 │   ├── sim-source.js             # "Modo simulado": datos falsos realistas sin hardware
 │   ├── db.js                     # Sesiones guardadas en IndexedDB (autoguardado)
 │   ├── surface3d.js              # Vista 3D de tablas (Three.js, se carga con import() dinámico)
@@ -61,12 +62,19 @@ igual en la calle, en el trabajo o donde sea que estés probando el vehículo.
    nivel-shifter ALDL si hace falta (ver comentarios en el archivo).
 3. Flashea al ESP8266. Al bootear, imprime por Serial (115200 baud) el nombre de
    la red y su IP (normalmente `192.168.4.1`, fija).
-4. Desde tu celular/laptop, conéctate a esa red WiFi como cualquier otra.
-5. En la web app, pon esa IP (o `rtweb.local`, si te funciona el mDNS) en el
-   campo de conexión y da "Conectar".
-6. Los frames crudos que llegan por WebSocket se decodifican con la definición
-   `.adx` cargada, y se grafican en vivo. El firmware autodetecta 160 vs 8192 baud
-   (ver `CLAUDE.md` para el detalle de qué tan validado está cada modo).
+4. Elige cómo conectar la web app (dos modos, ambos alimentan el mismo pipeline):
+   - **Por WiFi:** desde tu celular/laptop conéctate a la red del ESP8266 como
+     cualquier otra, pon su IP (`192.168.4.1` por defecto, o `rtweb.local` si te
+     funciona el mDNS) en el campo de host y da "Conectar por WiFi". Ojo: tu
+     computadora pierde su internet mientras esté en esa red.
+   - **Por USB:** conecta el ESP8266 a la computadora con el cable y da
+     "Conectar por USB" (te pide elegir el puerto serial). No usa WiFi, así que
+     la computadora conserva su internet. Requiere Chrome/Edge y abrir la app
+     desde `http://localhost` (Web Serial no existe en Safari/Firefox ni en
+     `http://<ip>`). Si falla al abrir el puerto, cierra el Monitor Serie de Arduino.
+5. Los frames crudos se decodifican con la definición `.adx` cargada, y se grafican
+   en vivo. El firmware autodetecta 160 vs 8192 baud (ver `CLAUDE.md` para el detalle
+   de qué tan validado está cada modo).
 
 ## Por qué no está publicado como Artifact de claude.ai
 

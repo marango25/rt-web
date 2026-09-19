@@ -1,5 +1,6 @@
 import { parseXDF, parseADX, detectFormat } from "./xdf-parser.js";
 import { RTBridgeClient } from "./ws-client.js";
+import { SerialBridgeClient } from "./serial-client.js";
 import { SimSource } from "./sim-source.js";
 import { saveSession, listSessions, deleteSession } from "./db.js";
 
@@ -41,6 +42,8 @@ const el = {
   binInput: document.getElementById("bin-input"),
   hostInput: document.getElementById("host-input"),
   connectBtn: document.getElementById("connect-btn"),
+  usbBtn: document.getElementById("usb-btn"),
+  usbHint: document.getElementById("usb-hint"),
   simBtn: document.getElementById("sim-btn"),
   downloadLogBtn: document.getElementById("download-log-btn"),
   clearLogBtn: document.getElementById("clear-log-btn"),
@@ -313,25 +316,57 @@ const bridge = new RTBridgeClient({
 
 const sim = new SimSource({ onFrame: applyFrame });
 
+// Mismo pipeline (applyFrame) que el WebSocket, pero leyendo el puerto USB directo:
+// no necesita red WiFi, así que la computadora no pierde su internet.
+const serialBridge = new SerialBridgeClient({
+  onFrame: applyFrame,
+  onStatus: (state, detail) => {
+    setStatus(state, detail);
+    el.usbBtn.textContent = state === "conectado" ? "Desconectar USB" : "Conectar por USB";
+  },
+});
+
+if (!SerialBridgeClient.supported) {
+  el.usbBtn.disabled = true;
+  el.usbHint.textContent =
+    "Tu navegador no soporta Web Serial (solo Chrome/Edge, abriendo la app desde http://localhost o https). Usa el modo WiFi.";
+}
+
 function frameLengthForParams() {
   if (!loadedParams.length) return 16;
   return Math.max(...loadedParams.map((p) => p.byteIndex + p.byteLength)) + 1;
 }
 
-el.connectBtn.addEventListener("click", () => {
+// Los tres orígenes de datos (WiFi, USB, simulado) se excluyen entre sí: al
+// arrancar uno se detienen los otros. El disconnect() del USB se espera antes
+// de arrancar el siguiente para que su status "desconectado" no pise al nuevo.
+el.connectBtn.addEventListener("click", async () => {
   sim.stop();
   el.simBtn.textContent = "Modo simulado";
-  const host = el.hostInput.value.trim() || "rtweb.local";
+  await serialBridge.disconnect();
+  const host = el.hostInput.value.trim() || "192.168.4.1";
   bridge.connect(host);
 });
 
-el.simBtn.addEventListener("click", () => {
+el.usbBtn.addEventListener("click", async () => {
+  if (serialBridge.connected) {
+    await serialBridge.disconnect();
+    return;
+  }
+  sim.stop();
+  bridge.disconnect();
+  el.simBtn.textContent = "Modo simulado";
+  await serialBridge.connect(); // sin ningún await antes: requestPort() necesita el gesto del click
+});
+
+el.simBtn.addEventListener("click", async () => {
   if (sim.running) {
     sim.stop();
     el.simBtn.textContent = "Modo simulado";
     setStatus("sin conectar");
   } else {
     bridge.disconnect();
+    await serialBridge.disconnect();
     sim.start(frameLengthForParams());
     el.simBtn.textContent = "Detener simulado";
     setStatus("simulado");

@@ -36,12 +36,18 @@
       </div>
 
       <div class="field">
-        <label for="host-input">Host del ESP8266</label>
-        <input id="host-input" type="text" placeholder="rtweb.local" />
+        <label for="host-input">Host del ESP8266 (modo WiFi)</label>
+        <input id="host-input" type="text" placeholder="192.168.4.1" />
+        <div class="hint">IP fija cuando estás conectado a la red que transmite el propio ESP8266.</div>
       </div>
 
       <div class="field">
-        <button id="connect-btn">Conectar</button>
+        <button id="connect-btn">Conectar por WiFi</button>
+      </div>
+
+      <div class="field">
+        <button id="usb-btn" class="secondary">Conectar por USB</button>
+        <div id="usb-hint" class="hint">Lee los frames directo por el cable USB: sin WiFi, tu computadora conserva su internet.</div>
       </div>
 
       <div class="field">

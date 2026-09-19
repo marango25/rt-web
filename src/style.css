@@ -75,6 +75,11 @@ body {
 
 .field button:hover { opacity: 0.9; }
 
+.field button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .field button.secondary {
   background: transparent;
   color: var(--accent);

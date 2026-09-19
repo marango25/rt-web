@@ -39,7 +39,16 @@ puente WiFi entre el bus ALDL del vehículo y una web app.
 
 - `src/xdf-parser.js` — parsers de XDF y ADX, con evaluador de ecuaciones
   lineales simples (`X*a+b`, etc). Soporta lo común, no todos los casos.
-- `src/ws-client.js` — cliente WebSocket con reconexión automática.
+- `src/ws-client.js` — cliente WebSocket con reconexión automática (modo WiFi).
+- `src/serial-client.js` — modo USB: lee los frames por Web Serial (Chrome/Edge,
+  solo en `http://localhost` o https) parseando las líneas `Frame ALDL (160 baud): XX XX ...`
+  que el firmware YA imprime por serial (115200) - no requirió cambios de firmware, y
+  también entiende el formato viejo sin `(160 baud)`. Llama a `onFrame(bytes, t, proto)`
+  igual que `ws-client.js`; en `main.js` WiFi, USB y simulado se excluyen entre sí.
+  Existe para que la computadora no pierda internet (con el ESP8266 en modo AP, conectarse
+  por WiFi a su red la deja sin internet, y sin Claude en vivo durante la prueba).
+  Probado con un `navigator.serial` falso + frames reales de `sin_iac.csv`; NO probado
+  aún con un ESP8266 real conectado por USB.
 - `src/main.js` + `index.html` + `style.css` — UI: cargar definición,
   tabla estática (XDF) o tarjetas de valores en vivo (ADX).
 - `firmware/esp8266_aldl_bridge/esp8266_aldl_bridge.ino` — firmware de referencia: bit-banging
