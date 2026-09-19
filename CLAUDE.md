@@ -43,8 +43,13 @@ puente WiFi entre el bus ALDL del vehículo y una web app.
 - `src/main.js` + `index.html` + `style.css` — UI: cargar definición,
   tabla estática (XDF) o tarjetas de valores en vivo (ADX).
 - `firmware/esp8266_aldl_bridge/esp8266_aldl_bridge.ino` — firmware de referencia: bit-banging
-  ALDL a 160 baud (timing en `ALDL_BIT_US`, probablemente necesite ajuste
-  fino con hardware real), servidor WebSocket async, mDNS (`rtweb.local`).
+  ALDL a 160/8192 baud autodetectado (timing en `ALDL_BIT_US`, probablemente
+  necesite ajuste fino con hardware real), servidor WebSocket async, mDNS
+  (`rtweb.local`). El ESP8266 transmite **su propia red WiFi** (modo Access
+  Point, `WiFi.softAP` con `AP_SSID`/`AP_PASS` de `secrets.h`) en vez de
+  unirse a una existente - no depende de tener el WiFi de casa o un hotspot
+  a la mano, sirve igual en la calle (cambio hecho a petición del usuario,
+  después de que tuvo que reflashear en la calle con su hotspot del celular).
   **Advertencia de hardware ya está en el propio archivo:** no conectar el
   pin ALDL directo al GPIO sin buffer/nivel-shifter.
 

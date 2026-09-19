@@ -19,7 +19,7 @@ rt-web/
 ├── firmware/
 │   └── esp8266_aldl_bridge/
 │       ├── esp8266_aldl_bridge.ino   # Firmware: ALDL 160/8192 baud (autodetectado) + WebSocket
-│       └── secrets.h.example         # Copia a secrets.h con tu WIFI_SSID/WIFI_PASS (gitignored)
+│       └── secrets.h.example         # Copia a secrets.h con el AP_SSID/AP_PASS del ESP8266 (gitignored)
 └── defs/
     ├── example.adx                   # Ejemplo INVENTADO (mismo mapeo que el Sonoma, para demo)
     ├── example.xdf                   # Tabla de ejemplo INVENTADA, para probar el overlay/vista 3D
@@ -50,14 +50,21 @@ rt-web/
 
 ## Cómo sigue (con tu ESP8266)
 
+El ESP8266 transmite **su propia red WiFi** (modo Access Point) en vez de unirse
+a la de tu casa — así no depende de tener un WiFi conocido a la mano, sirve
+igual en la calle, en el trabajo o donde sea que estés probando el vehículo.
+
 1. Copia `firmware/esp8266_aldl_bridge/secrets.h.example` a `secrets.h` (mismo directorio)
-   y pon ahí tu `WIFI_SSID`/`WIFI_PASS` real — ese archivo está en `.gitignore`, nunca se sube.
+   y pon ahí el `AP_SSID`/`AP_PASS` que quieras para esa red — ese archivo está en
+   `.gitignore`, nunca se sube. `AP_PASS` necesita mínimo 8 caracteres.
 2. Abre `esp8266_aldl_bridge.ino` en Arduino IDE / PlatformIO y ajusta el pin del
    nivel-shifter ALDL si hace falta (ver comentarios en el archivo).
-3. Flashea al ESP8266. Al bootear, imprime su IP por Serial (115200 baud) y también
-   la anuncia en la red local vía mDNS como `rtweb.local`.
-4. En la web app, pon esa IP (o `rtweb.local`) en el campo de conexión y da "Conectar".
-5. Los frames crudos que llegan por WebSocket se decodifican con la definición
+3. Flashea al ESP8266. Al bootear, imprime por Serial (115200 baud) el nombre de
+   la red y su IP (normalmente `192.168.4.1`, fija).
+4. Desde tu celular/laptop, conéctate a esa red WiFi como cualquier otra.
+5. En la web app, pon esa IP (o `rtweb.local`, si te funciona el mDNS) en el
+   campo de conexión y da "Conectar".
+6. Los frames crudos que llegan por WebSocket se decodifican con la definición
    `.adx` cargada, y se grafican en vivo. El firmware autodetecta 160 vs 8192 baud
    (ver `CLAUDE.md` para el detalle de qué tan validado está cada modo).
 

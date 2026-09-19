@@ -2,6 +2,9 @@
  * esp8266_aldl_bridge.ino
  *
  * Puente ESP8266 <-> GM ALDL (160 u 8192 baud, autodetectado) <-> WebSocket.
+ * El ESP8266 transmite su propia red WiFi (Access Point) - no necesita el
+ * WiFi de casa ni un hotspot del celular, así que sirve igual en la calle
+ * que en el garage. Conéctate a esa red y entra a su IP (ver setupWifi()).
  *
  * IMPORTANTE - lee esto antes de flashear:
  * 1. La línea ALDL es de un solo hilo (half-duplex), a nivel TTL pero con
@@ -36,7 +39,7 @@
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 #include <ESP8266mDNS.h>
-#include "secrets.h" // copia secrets.h.example a secrets.h y pon tu WIFI_SSID/WIFI_PASS ahí (no se sube al repo)
+#include "secrets.h" // copia secrets.h.example a secrets.h y pon ahí el AP_SSID/AP_PASS de la red que va a transmitir el ESP8266 (no se sube al repo)
 
 // ---------- CONFIG ----------
 const char* MDNS_NAME = "rtweb"; // -> rtweb.local
@@ -96,20 +99,23 @@ void onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* client,
   }
 }
 
+// El ESP8266 transmite SU PROPIA red WiFi (modo Access Point) en vez de
+// unirse a una existente - así no depende de tener el WiFi de casa (o un
+// hotspot del celular) a la mano para funcionar. Conecta el teléfono/laptop
+// directo a esta red y entra a la IP que imprime por Serial (normalmente
+// 192.168.4.1, fija, no cambia). mDNS (rtweb.local) también funciona como
+// atajo en la mayoría de casos, pero no es tan confiable en todos los
+// navegadores/Android - la IP siempre funciona.
 void setupWifi() {
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  Serial.print("Conectando a WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(400);
-    Serial.print(".");
-  }
-  Serial.println();
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(AP_SSID, AP_PASS);
+  Serial.print("Red propia lista: ");
+  Serial.println(AP_SSID);
   Serial.print("IP: ");
-  Serial.println(WiFi.localIP());
+  Serial.println(WiFi.softAPIP());
 
   if (MDNS.begin(MDNS_NAME)) {
-    Serial.printf("mDNS activo: http://%s.local\n", MDNS_NAME);
+    Serial.printf("mDNS activo (best-effort): http://%s.local\n", MDNS_NAME);
   }
 }
 
