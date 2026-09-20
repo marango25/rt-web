@@ -14,6 +14,11 @@
  * (las versiones viejas del firmware la imprimen sin el "(160 baud)"). Todo lo
  * demás que salga por el puerto (mensajes de arranque, "Sin datos ALDL...")
  * se ignora. Se llama onFrame(bytes, t, proto) igual que ws-client.js.
+ *
+ * Un firmware v2 además habla JSON por líneas en ambos sentidos: las líneas que
+ * empiezan con "{" ({"hello":...}, {"profile":...}, ver firmware-link.js) se
+ * entregan a onControl(msg), y send(obj) escribe un comando como una línea. Un
+ * firmware v1 no lee el puerto, así que nunca contesta.
  */
 
 const BAUD_RATE = 115200;
@@ -21,14 +26,34 @@ const FRAME_LINE = /Frame ALDL(?:\s*\((\d+)\s*baud[^)]*\))?:\s*((?:[0-9A-Fa-f]{2
 const MAX_LINE_BUFFER = 4096; // si llega basura sin ningún salto de línea, no dejar crecer el buffer sin límite
 
 export class SerialBridgeClient {
-  constructor({ onFrame, onStatus }) {
+  constructor({ onFrame, onControl, onStatus }) {
     this.onFrame = onFrame || (() => {});
+    this.onControl = onControl || (() => {});
     this.onStatus = onStatus || (() => {});
     this.port = null;
     this.reader = null;
     this.connected = false;
     this._closing = false;
     this._loopDone = null;
+    this._writeChain = Promise.resolve(); // un getWriter() a la vez: si está bloqueado, write() lanza TypeError
+  }
+
+  /** Devuelve false si no hay puerto abierto. La escritura en sí es asíncrona y sus errores no se propagan. */
+  send(obj) {
+    const port = this.port;
+    if (!this.connected || !port?.writable) return false;
+    const line = new TextEncoder().encode(JSON.stringify(obj) + "\n");
+    this._writeChain = this._writeChain
+      .then(async () => {
+        const writer = port.writable.getWriter();
+        try {
+          await writer.write(line);
+        } finally {
+          writer.releaseLock();
+        }
+      })
+      .catch((err) => console.warn("Web Serial write() falló:", err));
+    return true;
   }
 
   static get supported() {
@@ -125,7 +150,17 @@ export class SerialBridgeClient {
   }
 
   _handleLine(line) {
-    const m = line.trim().match(FRAME_LINE);
+    const text = line.trim();
+    if (text.startsWith("{")) {
+      try {
+        this.onControl(JSON.parse(text));
+      } catch {
+        console.warn("Línea de control no parseable:", text);
+      }
+      return;
+    }
+
+    const m = text.match(FRAME_LINE);
     if (!m) return;
     const bytes = m[2].trim().split(/\s+/).map((h) => parseInt(h, 16));
     this.onFrame(bytes, Math.round(performance.now()), m[1]); // m[1]: "160"/"8192", o undefined en firmwares viejos

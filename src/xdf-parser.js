@@ -13,6 +13,8 @@
  * lineales "X*a+b" que es el 90% de los casos reales).
  */
 
+import { normalizeProfile } from "./protocol-profile.js";
+
 export class ParsedTable {
   constructor({ name, rows, cols, cells, units, xLabel, yLabel, xAxis, yAxis, equation }) {
     this.name = name;
@@ -192,7 +194,23 @@ export function parseXDF(xmlText) {
   return { tables };
 }
 
-/** Parsea un ADX (definición de datastream en vivo). Devuelve { parameters: ParsedParameter[] } */
+/**
+ * Lee el bloque opcional <PROTOCOL baud="160" framebytes="20" promidindex="1" promid="02 27" />
+ * (perfil de protocolo, ver protocol-profile.js). Devuelve null si el ADX no lo trae: en ese
+ * caso la app se comporta como v1 (V1_PROFILE), así que los ADX viejos siguen funcionando.
+ */
+function parseProtocol(doc) {
+  const node = doc.querySelector("PROTOCOL");
+  if (!node) return null;
+  return normalizeProfile({
+    baud: attrOf(node, "baud"),
+    frameBytes: attrOf(node, "framebytes"),
+    promIdIndex: attrOf(node, "promidindex"),
+    promId: attrOf(node, "promid"),
+  });
+}
+
+/** Parsea un ADX (definición de datastream en vivo). Devuelve { parameters: ParsedParameter[], protocol: perfil|null } */
 export function parseADX(xmlText) {
   const doc = new DOMParser().parseFromString(xmlText, "application/xml");
   const errorNode = doc.querySelector("parsererror");
@@ -231,7 +249,7 @@ export function parseADX(xmlText) {
     );
   });
 
-  return { parameters };
+  return { parameters, protocol: parseProtocol(doc) };
 }
 
 /** Detecta si un texto XML es XDF o ADX mirando el nodo raíz. */

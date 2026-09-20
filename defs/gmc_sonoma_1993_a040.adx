@@ -42,6 +42,19 @@
     que es inventado), y ya validado contra una captura larga con el motor
     encendido de verdad, no solo con la llave en ON.
   -->
+
+  <!--
+    Perfil de protocolo (v2): lo que en v1 estaba compilado en el firmware
+    (ALDL_FRAME_BYTES, ALDL_PROM_ID_HI/LO). La web se lo manda al firmware al
+    conectar; un ADX sin este bloque se comporta como v1. Son los mismos valores
+    que v1 trae fijos, así que con este archivo el camión funciona igual.
+      baud         160 (confirmado en el Sonoma). Fijarlo evita que el firmware pruebe 8192.
+      framebytes   20 = iNumBytesInPayload del A040.ads.
+      promidindex  0-based: el PROM ID son los bytes 1 y 2 del frame.
+      promid       02 27. El firmware descarta los frames donde no calza (falsos SYNC).
+  -->
+  <PROTOCOL baud="160" framebytes="20" promidindex="1" promid="02 27" />
+
   <PARAMETERGROUP name="Motor">
     <PARAMETER id="rpm" name="RPM" units="rpm" byteindex="7" bytelength="1" equation="X*25" />
     <PARAMETER id="coolant_c" name="Temperatura refrigerante" units="C" byteindex="4" bytelength="1" table="coolant_c" />

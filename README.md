@@ -12,6 +12,8 @@ rt-web/
 │   ├── xdf-parser.js             # Parser de XDF/ADX (formato XML de TunerPro)
 │   ├── ws-client.js              # Cliente WebSocket hacia el ESP8266 (modo WiFi)
 │   ├── serial-client.js          # Lee los frames por USB con Web Serial (modo USB, sin WiFi)
+│   ├── protocol-profile.js       # Perfil de protocolo (bloque <PROTOCOL> del ADX): validación, sin DOM
+│   ├── firmware-link.js          # Apretón de manos web <-> firmware: hello, perfil, confirmación
 │   ├── sim-source.js             # "Modo simulado": datos falsos realistas sin hardware
 │   ├── db.js                     # Sesiones guardadas en IndexedDB (autoguardado)
 │   ├── surface3d.js              # Vista 3D de tablas (Three.js, se carga con import() dinámico)
@@ -24,6 +26,7 @@ rt-web/
 ├── docs/
 │   ├── electronica.md                # Conexión ESP8266 ↔ ALDL: esquema, materiales, verificaciones
 │   └── img/                          # Esquema y vista de protoboard (SVG)
+├── test/                             # Pruebas de la lógica sin DOM: `node --test` (Node 22.7+, sin dependencias)
 └── defs/
     ├── example.adx                   # Ejemplo INVENTADO (mismo mapeo que el Sonoma, para demo)
     ├── example.xdf                   # Tabla de ejemplo INVENTADA, para probar el overlay/vista 3D

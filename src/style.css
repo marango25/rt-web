@@ -234,6 +234,11 @@ body {
 .status-dot.bad { background: var(--danger); }
 .status-dot.sim { background: #e0b84c; }
 
+/* Resultado del apretón de manos con el firmware (ver firmware-link.js), pegado bajo el estado de conexión. */
+#firmware-status { margin: -8px 2px 14px; }
+#firmware-status:empty { display: none; }
+#firmware-status.warn { color: var(--danger); }
+
 .main {
   padding: 20px;
   overflow-y: auto;
