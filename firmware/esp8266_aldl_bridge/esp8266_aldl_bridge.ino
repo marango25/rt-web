@@ -26,6 +26,14 @@
  *    NO tiene un frame/PROM ID/checksum validado como 160 baud, porque
  *    nunca se probó contra una ECU real que lo use. Trátalo como un punto
  *    de partida para ese caso, no como algo ya calibrado.
+ * 5. (v2) Perfil de protocolo: el largo del frame, el PROM ID y si se fija el baud
+ *    ya no son solo constantes compiladas. La web los manda al conectar (WebSocket,
+ *    o una línea JSON por Serial en modo USB) tomándolos del bloque <PROTOCOL> del
+ *    .adx, y este firmware confirma lo que aplicó. Las constantes ALDL_FRAME_BYTES y
+ *    ALDL_PROM_ID_* quedan como valores por defecto (el Sonoma), así que con una web
+ *    v1 - que no manda nada - se comporta igual que antes. Ver "PERFIL DE PROTOCOLO".
+ *    Compila con el core ESP8266 3.1.2 + ArduinoJson 7.4.3 + ESPAsyncWebServer 3.1.0 y su
+ *    lógica se probó en el host, pero NUNCA se ha probado contra hardware.
  *
  * Librerías necesitadas (Arduino IDE > Library Manager):
  *  - ESP8266WiFi (viene con el core de ESP8266)
@@ -42,6 +50,7 @@
 #include "secrets.h" // copia secrets.h.example a secrets.h y pon ahí el AP_SSID/AP_PASS de la red que va a transmitir el ESP8266 (no se sube al repo)
 
 // ---------- CONFIG ----------
+#define FW_VERSION "2.0.0-alpha.1" // se anuncia en el "hello" y al arrancar; la web lo muestra
 const char* MDNS_NAME = "rtweb"; // -> rtweb.local
 
 #define ALDL_PIN 4          // GPIO donde llega la señal ALDL (vía buffer/level-shifter)
@@ -58,6 +67,7 @@ const char* MDNS_NAME = "rtweb"; // -> rtweb.local
                              // Cambia esto si usas otro ECM/definición.
 #define ALDL_PROM_ID_HI 0x02 // PROM ID (2 bytes, frameBuf[1..2]) es constante para este ECM -
 #define ALDL_PROM_ID_LO 0x27 // se usa para descartar frames mal sincronizados (ver loop()).
+#define ALDL_MAX_FRAME_BYTES 64 // tope del largo de frame que se puede pedir con un perfil (buffer de lectura)
 
 #define ALDL_8192_BIT_US 122     // periodo de un bit a 8192 baud (~122.07us). A diferencia de 160
                                   // baud (que codifica cada bit como ancho de pulso dentro de una
@@ -79,23 +89,198 @@ const char* MDNS_NAME = "rtweb"; // -> rtweb.local
 
 enum AldlProtocol { PROTO_160, PROTO_8192 };
 
+// Qué protocolo fija el perfil que manda la web: AUTO = probar 160 y alternar a 8192 (lo que
+// hacía v1); 160 u 8192 = quedarse en ese y no alternar.
+enum ProfileBaud { PBAUD_AUTO, PBAUD_160, PBAUD_8192 };
+
+// Perfil de protocolo: lo que en v1 eran solo constantes compiladas. Ver "PERFIL DE PROTOCOLO".
+struct AldlProfile {
+  ProfileBaud baud;
+  uint8_t frameBytes;   // bytes de payload tras el SYNC (solo 160 baud)
+  uint8_t promIdIndex;  // en qué byte del frame empieza el PROM ID (0-based)
+  uint8_t promIdLen;    // 0 = no validar PROM ID
+  uint8_t promId[4];
+};
+
 // ---------- ESTADO GLOBAL ----------
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
 
-uint8_t frameBuf[ALDL_8192_MAX_FRAME > ALDL_FRAME_BYTES ? ALDL_8192_MAX_FRAME : ALDL_FRAME_BYTES];
+static_assert(ALDL_8192_MAX_FRAME <= ALDL_MAX_FRAME_BYTES, "frameBuf debe caber un frame de 8192 baud");
+uint8_t frameBuf[ALDL_MAX_FRAME_BYTES];
 volatile bool frameReady = false;
 
 AldlProtocol currentProtocol = PROTO_160; // arrancamos asumiendo 160 baud (protocolo confirmado del Sonoma)
 uint8_t protocolFailures = 0;
+
+// Perfil vigente: arranca con las constantes del Sonoma, o sea lo mismo que v1.
+AldlProfile aldlProfile = {PBAUD_AUTO, ALDL_FRAME_BYTES, 1, 2, {ALDL_PROM_ID_HI, ALDL_PROM_ID_LO, 0, 0}};
+AldlProfile pendingAldlProfile;
+volatile bool profilePending = false;
+
+// ---------- PERFIL DE PROTOCOLO (v2) ----------
+// Mensajes JSON, una línea por Serial (USB) o un mensaje de texto por WebSocket:
+//   web -> {"cmd":"hello"}
+//   fw  -> {"hello":{"fw":"2.0.0-alpha.1","caps":["profile"]}}   (también al conectar un cliente WS y al arrancar)
+//   web -> {"cmd":"profile","baud":"160","frameBytes":20,"promIdIndex":1,"promId":[2,39]}
+//   fw  -> {"profile":{...lo que aplicó...}}   o   {"profileError":"motivo"}
+// El perfil NO se aplica en el momento en que llega: el callback de WebSocket puede correr en
+// medio de una lectura (yield() dentro de readAldlBit160) y cambiar el largo de frame a mitad de
+// captura corrompería el frame. Se deja pendiente y loop() lo aplica entre frames. Consecuencia:
+// la confirmación puede tardar hasta ~3 s con la llave apagada (lo que tarda en volver de una
+// lectura sin señal); la web espera hasta 6 s antes de avisar que no la recibió.
+// (Las funciones de esta sección no reciben AldlProfile por parámetro a propósito: el generador
+// de prototipos de Arduino suele colocarlos antes de la definición del struct y falla al compilar.)
+
+String buildHelloJson() {
+  StaticJsonDocument<192> doc;
+  JsonObject hello = doc.createNestedObject("hello");
+  hello["fw"] = FW_VERSION;
+  JsonArray caps = hello.createNestedArray("caps");
+  caps.add("profile");
+  String out;
+  serializeJson(doc, out);
+  return out;
+}
+
+// Serializa el perfil VIGENTE (aldlProfile), que es lo que se manda de vuelta como confirmación.
+String buildProfileJson() {
+  StaticJsonDocument<384> doc;
+  JsonObject p = doc.createNestedObject("profile");
+  p["baud"] = aldlProfile.baud == PBAUD_160 ? "160" : (aldlProfile.baud == PBAUD_8192 ? "8192" : "auto");
+  p["frameBytes"] = aldlProfile.frameBytes;
+  p["promIdIndex"] = aldlProfile.promIdIndex;
+  JsonArray promId = p.createNestedArray("promId");
+  for (uint8_t i = 0; i < aldlProfile.promIdLen; i++) promId.add(aldlProfile.promId[i]);
+  String out;
+  serializeJson(doc, out);
+  return out;
+}
+
+String buildProfileErrorJson(const char* msg) {
+  StaticJsonDocument<192> doc;
+  doc["profileError"] = msg;
+  String out;
+  serializeJson(doc, out);
+  return out;
+}
+
+// A todos los clientes WebSocket y por Serial: el perfil aplicado no está atado al transporte
+// por el que se pidió (loop() no sabe quién lo mandó).
+void announce(const String& json) {
+  ws.textAll(json);
+  Serial.println(json);
+}
+
+// Responde solo a quien preguntó: al cliente WS que mandó el comando, o por Serial si vino de ahí (client == nullptr).
+void replyControl(AsyncWebSocketClient* client, const String& json) {
+  if (client) client->text(json);
+  else Serial.println(json);
+}
+
+// Valida el comando "profile" y lo deja en pendingAldlProfile. Los mismos límites que valida la
+// web (protocol-profile.js): aquí se repiten por si llega algo que no salió de la web.
+bool parseProfileCommand(JsonDocument& doc, const char*& err) {
+  AldlProfile p;
+  memset(&p, 0, sizeof(p));
+
+  const char* baud = doc["baud"] | "auto";
+  if (strcmp(baud, "160") == 0) p.baud = PBAUD_160;
+  else if (strcmp(baud, "8192") == 0) p.baud = PBAUD_8192;
+  else if (strcmp(baud, "auto") == 0) p.baud = PBAUD_AUTO;
+  else { err = "baud no valido (160, 8192 o auto)"; return false; }
+
+  int frameBytes = doc["frameBytes"] | 0;
+  if (frameBytes < 1 || frameBytes > ALDL_MAX_FRAME_BYTES) { err = "frameBytes fuera de rango (1 a 64)"; return false; }
+  p.frameBytes = (uint8_t)frameBytes;
+
+  JsonArray promId = doc["promId"];
+  size_t n = promId.size();
+  if (n > sizeof(p.promId)) { err = "promId demasiado largo (maximo 4 bytes)"; return false; }
+  int index = doc["promIdIndex"] | 0;
+  if (n > 0 && (index < 0 || index + (int)n > frameBytes)) { err = "promId se sale del frame"; return false; }
+  p.promIdIndex = (uint8_t)(n > 0 ? index : 0);
+  p.promIdLen = (uint8_t)n;
+
+  size_t i = 0;
+  for (JsonVariant v : promId) {
+    int b = v | -1;
+    if (b < 0 || b > 255) { err = "promId: cada byte debe estar entre 0 y 255"; return false; }
+    p.promId[i++] = (uint8_t)b;
+  }
+
+  pendingAldlProfile = p;
+  return true;
+}
+
+// client: quien mandó el comando (WebSocket), o nullptr si vino por Serial.
+void handleCommand(const char* text, size_t len, AsyncWebSocketClient* client) {
+  StaticJsonDocument<384> doc;
+  if (deserializeJson(doc, text, len)) return; // JSON ilegible: se ignora, como hacía v1 con todo lo que le llegaba
+
+  const char* cmd = doc["cmd"] | "";
+  if (strcmp(cmd, "hello") == 0) {
+    replyControl(client, buildHelloJson());
+  } else if (strcmp(cmd, "profile") == 0) {
+    const char* err = nullptr;
+    if (parseProfileCommand(doc, err)) profilePending = true; // se aplica en loop(), entre frames
+    else replyControl(client, buildProfileErrorJson(err));
+  }
+}
+
+// Lee comandos por Serial (una línea JSON que empieza con "{"). No bloquea: solo consume lo
+// que ya llegó al buffer; loop() la llama una vez por vuelta.
+void pollSerialCommands() {
+  static char line[256];
+  static size_t n = 0;
+  static bool overflow = false;
+  while (Serial.available() > 0) {
+    char c = (char)Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (!overflow && n > 0 && line[0] == '{') handleCommand(line, n, nullptr);
+      n = 0;
+      overflow = false;
+    } else if (n < sizeof(line)) {
+      line[n++] = c;
+    } else {
+      overflow = true; // línea demasiado larga: se descarta hasta el próximo salto de línea
+    }
+  }
+}
+
+void applyPendingProfile() {
+  aldlProfile = pendingAldlProfile;
+  profilePending = false;
+  if (aldlProfile.baud == PBAUD_160) currentProtocol = PROTO_160;
+  else if (aldlProfile.baud == PBAUD_8192) currentProtocol = PROTO_8192;
+  protocolFailures = 0;
+  Serial.printf("Perfil aplicado: %u bytes por frame, PROM ID de %u byte(s)\n",
+                (unsigned)aldlProfile.frameBytes, (unsigned)aldlProfile.promIdLen);
+  announce(buildProfileJson());
+}
+
+// ¿El PROM ID del perfil vigente calza en este frame? Sin PROM ID en el perfil (largo 0) no se filtra nada.
+bool promIdMatches(const uint8_t* buf) {
+  for (uint8_t i = 0; i < aldlProfile.promIdLen; i++) {
+    if (buf[aldlProfile.promIdIndex + i] != aldlProfile.promId[i]) return false;
+  }
+  return true;
+}
 
 // ---------- WIFI + WEBSOCKET ----------
 void onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* client,
                AwsEventType type, void* arg, uint8_t* data, size_t len) {
   if (type == WS_EVT_CONNECT) {
     Serial.printf("Cliente WS conectado: %s\n", client->remoteIP().toString().c_str());
+    client->text(buildHelloJson()); // directo al cliente nuevo: textAll() puede no incluirlo todavía dentro de este evento
   } else if (type == WS_EVT_DISCONNECT) {
     Serial.println("Cliente WS desconectado");
+  } else if (type == WS_EVT_DATA) {
+    // Solo mensajes de texto completos en un único fragmento; los comandos son cortos.
+    AwsFrameInfo* info = (AwsFrameInfo*)arg;
+    if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
+      handleCommand((const char*)data, len, client);
+    }
   }
 }
 
@@ -125,7 +310,11 @@ void broadcastFrame(uint8_t* buf, size_t len, const char* proto) {
   // el firmware solo transporta bytes crudos + en qué protocolo los leyó.
   // "proto" existe para que la web app pueda avisar si el frame viene de un
   // modo (8192 baud) que todavía no tiene una definición real decodificable.
-  StaticJsonDocument<512> doc;
+  // Capacidad calculada para ALDL_MAX_FRAME_BYTES elementos + el objeto de 3 campos (con los 512
+  // fijos de v1 un frame de más de ~28 bytes perdía el final en silencio). Con las macros de la
+  // librería, y no un número a ojo, alcanza en cualquier plataforma. static: no carga el stack.
+  static StaticJsonDocument<JSON_OBJECT_SIZE(3) + JSON_ARRAY_SIZE(ALDL_MAX_FRAME_BYTES)> doc;
+  doc.clear();
   doc["t"] = millis();
   doc["proto"] = proto;
   JsonArray raw = doc.createNestedArray("raw");
@@ -286,6 +475,8 @@ size_t readAldlFrame8192(uint8_t* out, size_t maxLen) {
 // ---------- SETUP / LOOP ----------
 void setup() {
   Serial.begin(115200);
+  Serial.println();
+  Serial.println("RT-Web firmware " FW_VERSION);
   pinMode(ALDL_PIN, INPUT);
 
   setupWifi();
@@ -299,6 +490,7 @@ void setup() {
 
   server.begin();
   Serial.println("Servidor listo.");
+  Serial.println(buildHelloJson()); // por USB la placa suele reiniciarse al abrir el puerto: así la web lo ve al volver
 }
 
 // Cuenta un intento fallido del protocolo actual y, tras
@@ -310,14 +502,22 @@ void handleProtocolFailure() {
 
   static unsigned long lastNoDataLog = 0;
   if (millis() - lastNoDataLog > 2000) {
-    Serial.printf(
-        "Sin datos ALDL en modo %s (intento %u/%u antes de probar el otro protocolo) - normal si la "
-        "llave no esta en ON o el pin no es el correcto\n",
-        currentProtocol == PROTO_160 ? "160 baud" : "8192 baud", protocolFailures, ALDL_PROTO_FAILURES_BEFORE_SWITCH);
+    if (aldlProfile.baud == PBAUD_AUTO) {
+      Serial.printf(
+          "Sin datos ALDL en modo %s (intento %u/%u antes de probar el otro protocolo) - normal si la "
+          "llave no esta en ON o el pin no es el correcto\n",
+          currentProtocol == PROTO_160 ? "160 baud" : "8192 baud", protocolFailures, ALDL_PROTO_FAILURES_BEFORE_SWITCH);
+    } else {
+      Serial.printf(
+          "Sin datos ALDL en modo %s (protocolo fijado por el perfil) - normal si la llave no esta en ON "
+          "o el pin no es el correcto\n",
+          currentProtocol == PROTO_160 ? "160 baud" : "8192 baud");
+    }
     lastNoDataLog = millis();
   }
 
-  if (protocolFailures >= ALDL_PROTO_FAILURES_BEFORE_SWITCH) {
+  // Con el baud fijado por un perfil no se alterna: el ECU ya se sabe de qué velocidad es.
+  if (aldlProfile.baud == PBAUD_AUTO && protocolFailures >= ALDL_PROTO_FAILURES_BEFORE_SWITCH) {
     currentProtocol = (currentProtocol == PROTO_160) ? PROTO_8192 : PROTO_160;
     protocolFailures = 0;
     Serial.printf("Cambiando a modo %s...\n", currentProtocol == PROTO_160 ? "160 baud" : "8192 baud");
@@ -326,21 +526,24 @@ void handleProtocolFailure() {
 
 void loop() {
   ws.cleanupClients();
+  pollSerialCommands();
+  if (profilePending) applyPendingProfile(); // entre frames, nunca a mitad de una lectura
 
   if (currentProtocol == PROTO_160) {
-    if (readAldlFrame160(frameBuf, ALDL_FRAME_BYTES)) {
+    if (readAldlFrame160(frameBuf, aldlProfile.frameBytes)) {
       protocolFailures = 0;
       // El cazador de SYNC a veces engancha un falso positivo (ruido) y captura
       // bytes que no arrancan en el lugar correcto. El PROM ID es constante
       // en un frame bien alineado - si no calza, se descarta en vez de mandar
       // basura a la web app (esto es lo que causaba "80mph"/"13000rpm" con el
       // motor prendido: frames de otro alineamiento, no ruido bit a bit).
-      if (frameBuf[1] != ALDL_PROM_ID_HI || frameBuf[2] != ALDL_PROM_ID_LO) {
+      // Posición y valor salen del perfil (por defecto, los del Sonoma: bytes 1-2 = 02 27).
+      if (!promIdMatches(frameBuf)) {
         Serial.println("Frame descartado (PROM ID no calza - desincronizado)");
         return;
       }
-      logFrameHex("Frame ALDL (160 baud): ", frameBuf, ALDL_FRAME_BYTES);
-      broadcastFrame(frameBuf, ALDL_FRAME_BYTES, "160");
+      logFrameHex("Frame ALDL (160 baud): ", frameBuf, aldlProfile.frameBytes);
+      broadcastFrame(frameBuf, aldlProfile.frameBytes, "160");
     } else {
       handleProtocolFailure();
     }

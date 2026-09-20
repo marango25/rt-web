@@ -11,13 +11,25 @@
  *
  * onFrame(frameBytes, t, proto) se llama por cada frame crudo recibido;
  * quien use este cliente decide cómo decodificarlo (con el ADX cargado).
+ *
+ * Los mensajes que no son frames ({"hello":...}, {"profile":...}, {"profileError":...},
+ * ver firmware-link.js) se entregan a onControl(msg). Un firmware v1 nunca los manda.
+ * send(obj) manda un comando al firmware; un firmware v1 lo ignora.
  */
 export class RTBridgeClient {
-  constructor({ onFrame, onStatus }) {
+  constructor({ onFrame, onControl, onStatus }) {
     this.ws = null;
     this.onFrame = onFrame || (() => {});
+    this.onControl = onControl || (() => {});
     this.onStatus = onStatus || (() => {});
     this._reconnectTimer = null;
+  }
+
+  /** Devuelve false si no hay un WebSocket abierto (el comando no se mandó). */
+  send(obj) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    this.ws.send(JSON.stringify(obj));
+    return true;
   }
 
   connect(host) {
@@ -43,6 +55,7 @@ export class RTBridgeClient {
       try {
         const msg = JSON.parse(evt.data);
         if (Array.isArray(msg.raw)) this.onFrame(msg.raw, msg.t, msg.proto);
+        else if (msg && typeof msg === "object") this.onControl(msg);
       } catch (err) {
         console.warn("Frame no parseable:", evt.data);
       }

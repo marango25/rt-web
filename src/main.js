@@ -2,10 +2,13 @@ import { parseXDF, parseADX, detectFormat } from "./xdf-parser.js";
 import { RTBridgeClient } from "./ws-client.js";
 import { SerialBridgeClient } from "./serial-client.js";
 import { SimSource } from "./sim-source.js";
+import { FirmwareLink } from "./firmware-link.js";
+import { V1_PROFILE, describeProfile } from "./protocol-profile.js";
 import { saveSession, listSessions, deleteSession } from "./db.js";
 
 let loadedTables = [];
 let loadedParams = [];
+let loadedProtocol = null; // perfil de protocolo del .adx cargado (bloque <PROTOCOL>), o null: sin bloque = comportamiento v1
 let currentValues = {}; // id -> valor calculado
 let paramHistory = {}; // id -> number[] (ventana reciente, para la gráfica)
 let paramHistoryTimes = {}; // id -> number[] (mismos índices que paramHistory, timestamp ms) - para el tooltip al pasar el cursor
@@ -61,6 +64,7 @@ const el = {
   sessionList: document.getElementById("session-list"),
   statusDot: document.getElementById("status-dot"),
   statusText: document.getElementById("status-text"),
+  firmwareStatus: document.getElementById("firmware-status"),
   main: document.getElementById("main"),
 };
 
@@ -310,8 +314,12 @@ el.sessionList.addEventListener("click", async (evt) => {
 });
 
 const bridge = new RTBridgeClient({
-  onStatus: setStatus,
+  onStatus: (state, detail) => {
+    setStatus(state, detail);
+    onLinkStatus(state);
+  },
   onFrame: applyFrame,
+  onControl: (msg) => firmwareLink.handleControl(msg),
 });
 
 const sim = new SimSource({ onFrame: applyFrame });
@@ -320,11 +328,69 @@ const sim = new SimSource({ onFrame: applyFrame });
 // no necesita red WiFi, así que la computadora no pierde su internet.
 const serialBridge = new SerialBridgeClient({
   onFrame: applyFrame,
+  onControl: (msg) => firmwareLink.handleControl(msg),
   onStatus: (state, detail) => {
     setStatus(state, detail);
     el.usbBtn.textContent = state === "conectado" ? "Desconectar USB" : "Conectar por USB";
+    onLinkStatus(state);
   },
 });
+
+// Apretón de manos con el firmware (hello -> perfil de protocolo -> confirmación), igual
+// por WiFi que por USB. Con un firmware v1 nadie contesta y se asume el perfil fijo del
+// Sonoma (V1_PROFILE), que es exactamente lo que hacía la v1.
+const firmwareLink = new FirmwareLink({
+  send: (msg) => bridge.send(msg) || serialBridge.send(msg),
+  getProfile: () => loadedProtocol || V1_PROFILE,
+  onChange: renderFirmwareStatus,
+});
+
+function onLinkStatus(state) {
+  if (state === "conectado") firmwareLink.begin();
+  else firmwareLink.reset();
+}
+
+function renderFirmwareStatus(s) {
+  const fw = s.fw ? `Firmware ${s.fw}` : "Firmware";
+  let text = "";
+  let warn = false;
+
+  switch (s.phase) {
+    case "waiting":
+      text = "Firmware: detectando…";
+      break;
+    case "v1":
+      text = s.fw
+        ? `${fw}: no acepta perfiles de protocolo.`
+        : "Firmware v1 (no anunció versión): usa el perfil fijo del Sonoma.";
+      if (!s.canRunOnV1) {
+        text += ` Esta definición pide ${describeProfile(loadedProtocol || V1_PROFILE)} y no se puede aplicar: actualiza el firmware o los frames se decodificarán mal.`;
+        warn = true;
+      }
+      break;
+    case "sending":
+      text = `${fw}: enviando el perfil…`;
+      break;
+    case "applied":
+      text = `${fw}: perfil aplicado (${describeProfile(s.applied)}).`;
+      break;
+    case "mismatch":
+      text = `${fw} aplicó otro perfil (${describeProfile(s.applied)}) que el pedido (${describeProfile(s.requested)}).`;
+      warn = true;
+      break;
+    case "rejected":
+      text = `${fw} rechazó el perfil: ${s.error}.`;
+      warn = true;
+      break;
+    case "unconfirmed":
+      text = `${fw} no confirmó el perfil: los frames pueden decodificarse mal.`;
+      warn = true;
+      break;
+  }
+
+  el.firmwareStatus.textContent = text;
+  el.firmwareStatus.classList.toggle("warn", warn);
+}
 
 if (!SerialBridgeClient.supported) {
   el.usbBtn.disabled = true;
@@ -355,6 +421,7 @@ el.usbBtn.addEventListener("click", async () => {
   }
   sim.stop();
   bridge.disconnect();
+  firmwareLink.reset(); // bridge.disconnect() cierra en silencio, no avisa estado
   el.simBtn.textContent = "Modo simulado";
   await serialBridge.connect(); // sin ningún await antes: requestPort() necesita el gesto del click
 });
@@ -366,6 +433,7 @@ el.simBtn.addEventListener("click", async () => {
     setStatus("sin conectar");
   } else {
     bridge.disconnect();
+    firmwareLink.reset();
     await serialBridge.disconnect();
     sim.start(frameLengthForParams());
     el.simBtn.textContent = "Detener simulado";
@@ -390,7 +458,10 @@ el.fileInput.addEventListener("change", async (evt) => {
       renderMain();
     } else if (format === "adx") {
       await persistCurrentSession(); // guarda lo que quedó pendiente de la sesión anterior antes de reiniciar
-      loadedParams = parseADX(text).parameters;
+      const adx = parseADX(text); // si el bloque <PROTOCOL> es inválido lanza aquí, antes de cambiar nada
+      loadedParams = adx.parameters;
+      loadedProtocol = adx.protocol;
+      firmwareLink.profileChanged(); // con un firmware v2 conectado, se le manda el perfil nuevo
       paramHistory = {};
       paramHistoryTimes = {};
       paramMeta = {};

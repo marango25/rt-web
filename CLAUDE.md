@@ -49,6 +49,22 @@ puente WiFi entre el bus ALDL del vehículo y una web app.
   por WiFi a su red la deja sin internet, y sin Claude en vivo durante la prueba).
   Probado con un `navigator.serial` falso + frames reales de `sin_iac.csv`; NO probado
   aún con un ESP8266 real conectado por USB.
+- `src/protocol-profile.js` + `src/firmware-link.js` (v2) — **perfil de protocolo como
+  dato**. El ADX puede traer un bloque opcional `<PROTOCOL baud="160" framebytes="20"
+  promidindex="1" promid="02 27"/>` (ver `defs/gmc_sonoma_1993_a040.adx`) con lo que en v1
+  estaba compilado en el firmware para el Sonoma. Al conectar (WiFi o USB) la web hace un
+  apretón de manos con el firmware: `hello` -> perfil -> confirmación, y muestra el
+  resultado en la barra lateral. **Sin bloque, o con un firmware v1 que no contesta el
+  hello (tras 3 s), se comporta exactamente como v1** (valores fijos del Sonoma); solo
+  avisa en rojo si la definición pide un perfil que un firmware v1 no puede aplicar.
+  Protocolo, en JSON (un mensaje por WebSocket, o una línea por Serial en modo USB): ver el
+  encabezado de `firmware-link.js` y la sección "PERFIL DE PROTOCOLO" del `.ino`.
+- `test/` (v2) — pruebas de esa lógica: `node --test` desde la raíz (Node 22.7+, sin
+  dependencias). Cubren lo puro (sin DOM); `parseADX` y el cableado en `main.js` se
+  verificaron aparte en un navegador real. El firmware compila con el `arduino-cli` que trae
+  el Arduino IDE (`--fqbn esp8266:esp8266:nodemcuv2`, con un `secrets.h` de ejemplo) y su
+  lógica se probó en el host; **no se ha probado en la placa**. **Ojo:** un temporizador sin envolver (`this.clearTimer(...)` con `clearTimeout`
+  directo) pasa en node y falla en el navegador con "Illegal invocation".
 - `src/main.js` + `index.html` + `style.css` — UI: cargar definición,
   tabla estática (XDF) o tarjetas de valores en vivo (ADX).
 - `firmware/esp8266_aldl_bridge/esp8266_aldl_bridge.ino` — firmware de referencia: bit-banging
