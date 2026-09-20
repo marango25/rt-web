@@ -21,6 +21,9 @@ rt-web/
 │   └── esp8266_aldl_bridge/
 │       ├── esp8266_aldl_bridge.ino   # Firmware: ALDL 160/8192 baud (autodetectado) + WebSocket
 │       └── secrets.h.example         # Copia a secrets.h con el AP_SSID/AP_PASS del ESP8266 (gitignored)
+├── docs/
+│   ├── electronica.md                # Conexión ESP8266 ↔ ALDL: esquema, materiales, verificaciones
+│   └── img/                          # Esquema y vista de protoboard (SVG)
 └── defs/
     ├── example.adx                   # Ejemplo INVENTADO (mismo mapeo que el Sonoma, para demo)
     ├── example.xdf                   # Tabla de ejemplo INVENTADA, para probar el overlay/vista 3D
@@ -48,6 +51,15 @@ rt-web/
 4. Prueba el resto: click en una tarjeta para ampliar su gráfica, "Ver en 3D" en la tabla,
    carga `defs/example_calibration.bin` en el campo de binario para ver valores reales en
    la tabla, o descarga el CSV y pruébalo en el replay.
+
+## Conexión electrónica
+
+El ESP8266 (NodeMCU) lee la línea de datos ALDL a través de un divisor de voltaje de
+1 kΩ / 2.2 kΩ (la línea sale a ~5 V y el pin D2 no tolera más de 3.3 V) con un condensador de
+4.7 nF en paralelo con la 2.2 kΩ contra el ruido del motor, y una resistencia de 10 kΩ entre
+los pines B y A del conector ALDL hace que la ECM transmita. Esquema, vista de protoboard,
+lista de materiales y verificaciones en [docs/electronica.md](docs/electronica.md). **Léelo
+antes de conectar nada al vehículo.**
 
 ## Cómo sigue (con tu ESP8266)
 
@@ -98,6 +110,22 @@ incluso que el propio ESP8266 lo sirva.
 - [x] Overlay del log en vivo sobre las tablas (resalta la celda donde opera el motor)
 - [ ] Calibración real con un `.xdf` verdadero del 1228062/A040 (necesita reverse-engineering
       o encontrar uno ya hecho en la comunidad — ver `CLAUDE.md`)
+
+## Primer caso real
+
+El sistema ya cumplió su propósito con el vehículo para el que se armó (GMC Sonoma 1993, 2.8L
+TBI): sus registros ayudaron a **encontrar un problema**. Los síntomas eran un cabeceo al
+encender el A/C y un bajón en el arranque en frío, y a simple vista no había nada que medir.
+Los logs mostraron que:
+
+- En ralentí caliente y sin A/C, el sensor O2 casi no se mueve (510 a 560 mV, unos 50 mV de
+  variación) y la ECM está en lazo cerrado solo ~10 % del tiempo.
+- En las sesiones largas, con el escape ya caliente, el sensor sí oscila (120 a 866 mV) y el
+  lazo cerrado sube a 71–96 %.
+
+Eso apunta a un sensor O2 de un solo hilo, sin calefactor, que se enfría en ralentí. **Es una
+hipótesis respaldada por datos, todavía sin confirmar:** falta cambiarlo por uno calefactado y
+repetir las capturas.
 
 ## Licencia
 

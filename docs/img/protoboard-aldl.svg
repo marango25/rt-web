@@ -1,0 +1,185 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Extraído de "Diagrama ALDL NodeMCU (1).html" (2026-09-19). Ajuste respecto al original,
+solo de claridad (el circuito no cambia): el pin rojo estaba en la columna 7 (GND) y el gris en la 6 (3V3, "no usar");
+se intercambiaron para que el rojo marque la 3V3 (columna 6), como dicen las etiquetas.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" width="1200" height="760" font-family="IBM Plex Mono, ui-monospace, monospace">
+  <title>Vista de protoboard del mismo circuito</title>
+      <defs>
+        <pattern id="pbholes" x="387" y="244" width="26" height="24" patternUnits="userSpaceOnUse">
+          <circle cx="13" cy="12" r="3.2" fill="#b9b1a3"></circle>
+        </pattern>
+      </defs>
+      <rect x="0" y="0" width="1200" height="760" fill="#fffdfa"></rect>
+
+      <!-- ALDL connector -->
+      <rect x="70" y="140" width="250" height="290" rx="8" fill="#f1ede6" stroke="#1b1917" stroke-width="2"></rect>
+      <text x="82" y="122" font-size="15" font-weight="600" fill="#1b1917">PUERTO ALDL</text>
+      <rect x="92" y="196" width="150" height="46" rx="5" fill="#fffdfa" stroke="#c9c1b4"></rect>
+      <text x="106" y="218" font-size="14" font-weight="600" fill="#1b1917">PIN A</text>
+      <text x="106" y="234" font-size="11" fill="#6b6157">Tierra / GND</text>
+      <circle cx="320" cy="219" r="7" fill="#1b1917"></circle>
+      <rect x="92" y="266" width="150" height="46" rx="5" fill="#fffdfa" stroke="#c9c1b4"></rect>
+      <text x="106" y="288" font-size="14" font-weight="600" fill="#1b1917">PIN B</text>
+      <text x="106" y="304" font-size="11" fill="#6b6157">Diagnóstico</text>
+      <circle cx="320" cy="289" r="7" fill="#1b1917"></circle>
+      <rect x="92" y="336" width="150" height="46" rx="5" fill="#fffdfa" stroke="#c9c1b4"></rect>
+      <text x="106" y="358" font-size="14" font-weight="600" fill="#1b1917">PIN E (o M)</text>
+      <text x="106" y="374" font-size="11" fill="#6b6157">Datos serie 5 V</text>
+      <circle cx="320" cy="359" r="7" fill="#c2612a"></circle>
+
+      <!-- 10k between A and B, en el propio conector -->
+      <text x="82" y="470" font-size="12" font-weight="600" fill="#1b1917">Todo va en la</text>
+      <text x="82" y="488" font-size="12" font-weight="600" fill="#1b1917">protoboard</text>
+      <text x="82" y="508" font-size="11" fill="#6b6157">Del ALDL solo salen</text>
+      <text x="82" y="524" font-size="11" fill="#6b6157">4 cables</text>
+
+      <!-- Protoboard -->
+      <rect x="380" y="250" width="740" height="310" rx="8" fill="#f2efe8" stroke="#1b1917" stroke-width="2"></rect>
+      <rect x="389" y="262" width="722" height="120" fill="url(#pbholes)"></rect>
+      <rect x="389" y="408" width="722" height="120" fill="url(#pbholes)"></rect>
+      <rect x="389" y="382" width="722" height="26" fill="#e3ded3"></rect>
+      <text x="392" y="200" font-size="15" font-weight="600" fill="#1b1917">PROTOBOARD DE 400 PUNTOS (27 columnas dibujadas) — NodeMCU insertado</text>
+      <text x="364" y="278" font-size="10.5" fill="#6b6157">A</text>
+      <text x="364" y="302" font-size="10.5" fill="#6b6157">B</text>
+      <text x="364" y="326" font-size="10.5" fill="#6b6157">C</text>
+      <text x="364" y="374" font-size="10.5" fill="#6b6157">E</text>
+      <text x="364" y="424" font-size="10.5" fill="#6b6157">F</text>
+      <text x="364" y="520" font-size="10.5" fill="#6b6157">J</text>
+      <text x="398" y="548" font-size="10.5" fill="#6b6157">1</text>
+      <text x="424" y="548" font-size="10.5" fill="#6b6157">2</text>
+      <text x="450" y="548" font-size="10.5" fill="#6b6157">3</text>
+      <text x="554" y="548" font-size="10.5" fill="#6b6157">7</text>
+      <text x="1048" y="548" font-size="10.5" fill="#6b6157">27</text>
+
+      <!-- NodeMCU insertado a caballo del canal central -->
+      <rect x="392" y="350" width="412" height="90" rx="6" fill="#16302a" stroke="#0d1c18" stroke-width="2"></rect>
+      <rect x="560" y="366" width="150" height="58" rx="4" fill="#2b4a42"></rect>
+      <text x="576" y="401" font-size="12" fill="#bcd4cc">módulo ESP-12E</text>
+      <path d="M790 356 H 1152 V 236" stroke="#c9c1b4" stroke-width="1.5" stroke-dasharray="4 3" fill="none"></path>
+      <text x="860" y="226" font-size="13" font-weight="600" fill="#1b1917">NODEMCU ESP8266 — pines en filas E y F,</text>
+      <text x="860" y="242" font-size="11" fill="#6b6157">cuerpo apoyado sobre el canal central</text>
+      <g fill="#cfc8bd" stroke="#0d1c18" stroke-width="1">
+        <rect x="396" y="364" width="12" height="12"></rect><rect x="422" y="364" width="12" height="12"></rect>
+        <rect x="448" y="364" width="12" height="12"></rect><rect x="474" y="364" width="12" height="12"></rect>
+        <rect x="500" y="364" width="12" height="12"></rect><rect x="526" y="364" width="12" height="12"></rect>
+        <rect x="552" y="364" width="12" height="12"></rect><rect x="578" y="364" width="12" height="12"></rect>
+        <rect x="604" y="364" width="12" height="12"></rect><rect x="630" y="364" width="12" height="12"></rect>
+        <rect x="656" y="364" width="12" height="12"></rect><rect x="682" y="364" width="12" height="12"></rect>
+        <rect x="708" y="364" width="12" height="12"></rect><rect x="734" y="364" width="12" height="12"></rect>
+        <rect x="760" y="364" width="12" height="12"></rect><rect x="786" y="364" width="12" height="12"></rect>
+        <rect x="396" y="414" width="12" height="12"></rect><rect x="422" y="414" width="12" height="12"></rect>
+        <rect x="448" y="414" width="12" height="12"></rect><rect x="474" y="414" width="12" height="12"></rect>
+        <rect x="500" y="414" width="12" height="12"></rect><rect x="526" y="414" width="12" height="12"></rect>
+        <rect x="552" y="414" width="12" height="12"></rect><rect x="578" y="414" width="12" height="12"></rect>
+        <rect x="604" y="414" width="12" height="12"></rect><rect x="630" y="414" width="12" height="12"></rect>
+        <rect x="656" y="414" width="12" height="12"></rect><rect x="682" y="414" width="12" height="12"></rect>
+        <rect x="708" y="414" width="12" height="12"></rect><rect x="734" y="414" width="12" height="12"></rect>
+        <rect x="760" y="414" width="12" height="12"></rect><rect x="786" y="414" width="12" height="12"></rect>
+      </g>
+      <rect x="448" y="364" width="12" height="12" fill="#d8c063" stroke="#0d1c18" stroke-width="1"></rect>
+      <rect x="552" y="364" width="12" height="12" fill="#cfc8bd" stroke="#0d1c18" stroke-width="1"></rect>
+      <rect x="526" y="364" width="12" height="12" fill="#b03a2e" stroke="#0d1c18" stroke-width="1"></rect>
+
+      <!-- etiquetas de pines usados -->
+      <g stroke="#c9c1b4" stroke-width="1.5" stroke-dasharray="4 3" fill="none">
+        <path d="M558 420 V 466 H 614"></path>
+        <path d="M532 420 V 490 H 614"></path>
+        <path d="M454 420 V 512 H 614"></path>
+      </g>
+      <rect x="614" y="458" width="164" height="20" rx="3" fill="#f2efe8"></rect>
+      <text x="620" y="472" font-size="12" font-weight="600" fill="#1b1917">GND — columna 7</text>
+      <rect x="614" y="482" width="200" height="20" rx="3" fill="#f2efe8"></rect>
+      <text x="620" y="496" font-size="11" fill="#b03a2e">columna 6 = 3V3, no usar</text>
+      <rect x="614" y="504" width="196" height="20" rx="3" fill="#f2efe8"></rect>
+      <text x="620" y="518" font-size="12" font-weight="600" fill="#1b1917">D2 (GPIO4) — columna 3</text>
+
+      <!-- Pin E -> columna 2, fila A -->
+      <path d="M320 359 H 350 V 240 H 428 V 274" stroke="#c2612a" stroke-width="3" fill="none"></path>
+      <circle cx="428" cy="274" r="5" fill="#c2612a"></circle>
+
+      <!-- Pin A -> columna 6, fila A -->
+      <path d="M320 219 H 558 V 298" stroke="#1b1917" stroke-width="3" fill="none"></path>
+      <circle cx="558" cy="298" r="5" fill="#1b1917"></circle>
+
+      <!-- 4.7 nF: col 3 -> col 7, fila A -->
+      <path d="M454 274 H 494 M510 274 H 558" stroke="#1b1917" stroke-width="2.5" fill="none"></path>
+      <path d="M494 264 V 284 M510 264 V 284" stroke="#1b1917" stroke-width="4" fill="none"></path>
+      <circle cx="454" cy="274" r="5" fill="#1b1917"></circle>
+      <circle cx="558" cy="274" r="5" fill="#1b1917"></circle>
+      <rect x="614" y="252" width="272" height="20" rx="3" fill="#f2efe8"></rect>
+      <text x="620" y="266" font-size="13" font-weight="600" fill="#1b1917">4.7 nF — fila A, col. 3 a col. 7</text>
+      <path d="M560 262 H 614" stroke="#c9c1b4" stroke-width="1.5" stroke-dasharray="4 3" fill="none"></path>
+
+      <!-- 1k: col 2 -> col 3, fila B -->
+      <path d="M428 298 H 454" stroke="#1b1917" stroke-width="2.5" fill="none"></path>
+      <rect x="431" y="290" width="20" height="17" rx="3" fill="#e7dcc6" stroke="#1b1917" stroke-width="2"></rect>
+      <circle cx="428" cy="298" r="5" fill="#1b1917"></circle>
+      <circle cx="454" cy="298" r="5" fill="#1b1917"></circle>
+      <rect x="614" y="282" width="250" height="20" rx="3" fill="#f2efe8"></rect>
+      <text x="620" y="296" font-size="13" font-weight="600" fill="#1b1917">1 kΩ — fila B, col. 2 a col. 3</text>
+      <path d="M456 294 H 614" stroke="#c9c1b4" stroke-width="1.5" stroke-dasharray="4 3" fill="none"></path>
+
+      <!-- 2.2k: col 4 -> col 6, fila C -->
+      <path d="M454 322 H 558" stroke="#1b1917" stroke-width="2.5" fill="none"></path>
+      <rect x="486" y="314" width="40" height="17" rx="3" fill="#e7dcc6" stroke="#1b1917" stroke-width="2"></rect>
+      <circle cx="454" cy="322" r="5" fill="#1b1917"></circle>
+      <circle cx="558" cy="322" r="5" fill="#1b1917"></circle>
+      <rect x="614" y="312" width="266" height="20" rx="3" fill="#f2efe8"></rect>
+      <text x="620" y="326" font-size="13" font-weight="600" fill="#1b1917">2.2 kΩ — fila C, col. 3 a col. 7</text>
+      <path d="M556 322 H 614" stroke="#c9c1b4" stroke-width="1.5" stroke-dasharray="4 3" fill="none"></path>
+
+      <!-- micro-USB y alimentación -->
+      <rect x="804" y="382" width="36" height="26" rx="3" fill="#cfc8bd" stroke="#1b1917" stroke-width="2"></rect>
+      <path d="M840 395 H 1140 V 618" stroke="#b03a2e" stroke-width="3" fill="none"></path>
+      <rect x="890" y="618" width="250" height="64" rx="8" fill="#f7e9e6" stroke="#b03a2e" stroke-width="2"></rect>
+      <text x="906" y="646" font-size="13" font-weight="600" fill="#1b1917">Cargador 12 V → 5 V</text>
+      <text x="906" y="666" font-size="11" fill="#6b6157">encendedor + micro-USB</text>
+
+      <!-- Notas -->
+      <text x="380" y="628" font-size="12" fill="#5c554c">Col. 2 = entrada de datos (Pin E, 5 V)</text>
+      <text x="380" y="648" font-size="12" fill="#5c554c">Col. 3 = unión 1 kΩ + 2.2 kΩ, ya en D2 (GPIO4)</text>
+      <text x="380" y="668" font-size="12" fill="#5c554c">Col. 7 = tierra (Pin A + 2.2 kΩ + 4.7 nF, ya en GND)</text>
+      <text x="380" y="690" font-size="11" fill="#6b6157">Col. 18 y 20 = 10 kΩ (fila H) y los cables al Pin B y Pin A (fila J):</text>
+      <text x="380" y="706" font-size="11" fill="#6b6157">las filas F–J de una columna son el mismo punto, así que ya están unidos.</text>
+
+      <!-- columnas 18 y 20: mismo punto eléctrico -->
+      <rect x="836" y="410" width="16" height="118" rx="6" fill="#c2612a" opacity="0.14"></rect>
+      <rect x="888" y="410" width="16" height="118" rx="6" fill="#c2612a" opacity="0.14"></rect>
+      <rect x="912" y="490" width="200" height="18" rx="3" fill="#f2efe8"></rect>
+      <text x="918" y="504" font-size="11" fill="#8f4416">columna sombreada =</text>
+      <rect x="912" y="508" width="200" height="18" rx="3" fill="#f2efe8"></rect>
+      <text x="918" y="522" font-size="11" fill="#8f4416">un mismo punto eléctrico</text>
+
+      <!-- 10k en la protoboard -->
+      <path d="M844 468 H 896" stroke="#1b1917" stroke-width="2.5" fill="none"></path>
+      <rect x="850" y="460" width="40" height="17" rx="3" fill="#e7dcc6" stroke="#1b1917" stroke-width="2"></rect>
+      <circle cx="844" cy="468" r="5" fill="#1b1917"></circle>
+      <circle cx="896" cy="468" r="5" fill="#1b1917"></circle>
+      <rect x="912" y="436" width="200" height="20" rx="3" fill="#f2efe8"></rect>
+      <text x="918" y="450" font-size="13" font-weight="600" fill="#1b1917">10 kΩ — col. 18 y 20</text>
+      <text x="364" y="472" font-size="10.5" fill="#6b6157">H</text>
+      <text x="836" y="548" font-size="10.5" fill="#6b6157">18</text>
+      <text x="888" y="548" font-size="10.5" fill="#6b6157">20</text>
+
+      <!-- cable col 13 -> Pin B -->
+      <path d="M844 516 V 578 H 360 V 289 H 320" stroke="#1b1917" stroke-width="3" fill="none"></path>
+      <circle cx="844" cy="516" r="5" fill="#1b1917"></circle>
+      <text x="376" y="572" font-size="11" fill="#6b6157">cable al Pin B</text>
+
+      <!-- cable col 15 -> Pin A -->
+      <path d="M896 516 V 600 H 336 V 371 A 12 12 0 0 0 336 347 V 301 A 12 12 0 0 0 336 277 V 219" stroke="#1b1917" stroke-width="3" fill="none"></path>
+      <circle cx="896" cy="516" r="5" fill="#1b1917"></circle>
+      <circle cx="336" cy="219" r="5" fill="#1b1917"></circle>
+      <text x="376" y="594" font-size="11" fill="#6b6157">cable al Pin A</text>
+
+      <g>
+        <line x1="82" y1="720" x2="122" y2="720" stroke="#c2612a" stroke-width="3"></line>
+        <text x="132" y="725" font-size="12" fill="#5c554c">señal de datos</text>
+        <line x1="260" y1="720" x2="300" y2="720" stroke="#1b1917" stroke-width="3"></line>
+        <text x="310" y="725" font-size="12" fill="#5c554c">tierra (GND)</text>
+        <line x1="440" y1="720" x2="480" y2="720" stroke="#b03a2e" stroke-width="3"></line>
+        <text x="490" y="725" font-size="12" fill="#5c554c">alimentación 5 V</text>
+      </g>
+    </svg>

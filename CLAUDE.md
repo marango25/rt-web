@@ -73,6 +73,44 @@ confirmado: **GMC Sonoma 1993, 2.8L TBI, 5 vel. manual, 4x2, A/C** — ECM
 flags de 1 bit, PROM ID de 16 bits). Falta cablear el naranja al nivel-shifter
 y conectar con la llave en "on" para probar contra el auto real.
 
+(Actualización 2026-09-19: lo de arriba es historial; el montaje ya está armado y
+lee el camión con la v1.0.0. El cableado real está en la sección siguiente.)
+
+## Conexión electrónica (resumen; esquema y verificaciones en `docs/electronica.md`)
+
+Montaje casero de **solo lectura** con un NodeMCU ESP8266 (ESP-12E) en protoboard,
+según el "Diagrama ALDL NodeMCU" del usuario (2026-09-19):
+
+- **Dato:** pin E del ALDL (en algunos conectores, el M; ~5 V) → 1 kΩ → nodo → **D2 =
+  GPIO4** (`ALDL_PIN 4` en el firmware); del nodo, 2.2 kΩ a GND. Da ~3.44 V en D2.
+  Nunca el pin de datos directo al GPIO: el ESP8266 no tolera 5 V. En paralelo con la
+  2.2 kΩ va un condensador cerámico de **4.7 nF** ("472") anti-ruido: sirve de 1 a 10 nF,
+  **nunca 100 nF** (deja poco margen frente al pulso corto de ~370 µs del ALDL).
+- **Tierra común:** pin A del ALDL ↔ GND del NodeMCU.
+- **10 kΩ entre el pin B (diagnóstico) y el pin A:** según el diagrama, es lo que
+  hace que la ECM transmita el flujo de datos. El ESP8266 **no** se conecta al pin B
+  (ECM A9, blanco/negro); ahí solo va la resistencia. En el ECM, el dato es A8 (naranja).
+- **Alimentación:** micro-USB desde un cargador de encendedor 12 V → 5 V (o el USB
+  de la computadora en modo USB).
+- **Sin camino de transmisión hacia la ECM.** Cualquier cosa que exija enviarle
+  peticiones (p. ej. Mode 1 a 8192 baud) necesita hardware nuevo que no existe todavía.
+- **Diagramas:** `docs/img/esquema-aldl.svg` y `docs/img/protoboard-aldl.svg`, extraídos
+  del "Diagrama ALDL NodeMCU" del usuario (versión con condensador, 2026-09-19); el
+  detalle y el montaje están en `docs/electronica.md`.
+- **Sin confirmar:** voltaje medido en D2 con el motor en marcha, y si el condensador, el
+  cable trenzado y la tierra corta que ya trae el diagrama están instalados en el camión.
+  No des por hecho ninguno de los dos.
+
+## Resultado real (2026-09-19)
+
+El sistema ya cumplió su propósito: los registros del Sonoma ayudaron a encontrar un
+problema que no se veía a simple vista. En ralentí caliente sin A/C el sensor O2 (1 hilo,
+sin calefactor) casi no se mueve (~50 mV de variación) y la ECM está en lazo cerrado solo
+~10 % del tiempo; en las sesiones largas, con el escape caliente, el sensor oscila (120 a
+866 mV) y el lazo cerrado sube a 71–96 %. Es una **hipótesis respaldada por datos, sin
+confirmar**: falta cambiar el sensor por uno calefactado y repetir las capturas, y eso se
+trata aparte del desarrollo. Detalle para humanos en el README ("Primer caso real").
+
 ## Pendiente (backlog real, en orden sugerido)
 
 1. ~~Modo simulado en la web app~~ — HECHO: `src/sim-source.js` genera
