@@ -101,15 +101,31 @@ según el "Diagrama ALDL NodeMCU" del usuario (2026-09-19):
   cable trenzado y la tierra corta que ya trae el diagrama están instalados en el camión.
   No des por hecho ninguno de los dos.
 
-## Resultado real (2026-09-19)
+## Resultado real (2026-09-19; actualizado 2026-09-20)
 
 El sistema ya cumplió su propósito: los registros del Sonoma ayudaron a encontrar un
-problema que no se veía a simple vista. En ralentí caliente sin A/C el sensor O2 (1 hilo,
-sin calefactor) casi no se mueve (~50 mV de variación) y la ECM está en lazo cerrado solo
-~10 % del tiempo; en las sesiones largas, con el escape caliente, el sensor oscila (120 a
-866 mV) y el lazo cerrado sube a 71–96 %. Es una **hipótesis respaldada por datos, sin
-confirmar**: falta cambiar el sensor por uno calefactado y repetir las capturas, y eso se
-trata aparte del desarrollo. Detalle para humanos en el README ("Primer caso real").
+problema que no se veía a simple vista. Con el sensor O2 original (1 hilo, sin calefactor)
+la ECM estaba en lazo cerrado solo ~10 % del tiempo en ralentí caliente (O2 510–560 mV).
+El 2026-09-20 se instaló un Bosch 13026 calefactado (4 cables) y los datos lo **confirman**:
+lazo cerrado ~100 %, O2 ~90–800 mV en ralentí caliente, ningún código (~550 frames).
+
+Lo que sigue abierto (no lo des por resuelto; se trata aparte del desarrollo):
+
+- **BLM ~151 fijo (hasta 161) con INT en 128–131:** la ECM necesita +18–26 % de combustible.
+  No se desvanece con la carga (muestra pequeña bajo carga). Pendiente: presión de combustible
+  del TBI, sellado del sensor/junta de escape, mangueras de vacío.
+- **Arranque en frío con el sensor nuevo: sin medir** (el primer log empezó a 48 °C); es la
+  prueba que falta para el síntoma original. Captúrala con la web v1 de `main`, no con la de v2.
+- **El cabeceo NO se le atribuye al sensor:** el usuario lo resolvió moviendo un cable
+  (bornes/alternador; el testigo de batería casi se encendía). Ese episodio cayó en un hueco de
+  700 s sin frames, sin datos. No escribas que el sensor lo causaba.
+- **Variables mezcladas entre capturas:** tiempo base (11° → 0° con el conector SET TIMING
+  desconectado; con él conectado la ECM lo lleva sola a 16–18° en ralentí), limpieza de la IAC
+  y reset del BLM. No compares el BLM entre días como si nada.
+- La ECM entrega 1 frame cada ~3.6 s: los CSV no resuelven fallas de encendido ni oscilaciones
+  rápidas del O2. Compara distribuciones (percentiles), no cuentes cruces.
+
+Detalle para humanos en el README ("Primer caso real").
 
 ## Pendiente (backlog real, en orden sugerido)
 

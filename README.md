@@ -123,9 +123,28 @@ Los logs mostraron que:
 - En las sesiones largas, con el escape ya caliente, el sensor sí oscila (120 a 866 mV) y el
   lazo cerrado sube a 71–96 %.
 
-Eso apunta a un sensor O2 de un solo hilo, sin calefactor, que se enfría en ralentí. **Es una
-hipótesis respaldada por datos, todavía sin confirmar:** falta cambiarlo por uno calefactado y
-repetir las capturas.
+Eso apuntaba a un sensor O2 de un solo hilo, sin calefactor, que se enfría en ralentí.
+
+### Después de cambiar el sensor (2026-09-20)
+
+Se instaló un sensor calefactado (Bosch 13026, 4 cables) y se repitieron las capturas: ralentí,
+A/C y una vuelta de manejo (~550 frames válidos, sin ningún código de falla).
+
+- **Confirmado:** con el motor caliente la ECM está en lazo cerrado ~100 % del tiempo (antes
+  ~10 % en ralentí) y el O2 oscila de verdad (~90 a 800 mV en ralentí caliente, antes 510 a 560).
+- **Hallazgo nuevo, sin resolver:** el BLM (corrección aprendida de combustible) se queda en
+  ~151 y llega a 161, con el integrador centrado en 128. La ECM está estable, pero necesita
+  entre +18 % y +26 % de combustible extra; el sensor viejo lo escondía en parte. Falta medir la
+  presión de combustible y revisar el sellado del sensor y la junta del escape.
+- **El cabeceo no se le atribuye al sensor.** Apareció uno con el motor parado después de la
+  vuelta y desapareció al mover un cable; el testigo de la batería casi se encendía, así que la
+  causa fue una mala conexión eléctrica (bornes o cable del alternador). Ese momento cayó en un
+  hueco de 700 s sin frames, por lo que los datos ni lo prueban ni lo descartan.
+- **Aún sin medir:** el arranque en frío con el sensor nuevo, que era el síntoma original.
+
+Ojo al comparar capturas: entre ellas también cambiaron el tiempo base y la limpieza de la IAC,
+y el BLM se reinició. Además la ECM entrega un frame cada ~3.6 s, así que el CSV sirve para
+comparar distribuciones (percentiles), no para ver fallas de encendido ni oscilaciones rápidas.
 
 ## Licencia
 
