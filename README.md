@@ -84,6 +84,8 @@ igual en la calle, en el trabajo o donde sea que estés probando el vehículo.
      la computadora conserva su internet. Requiere Chrome/Edge y abrir la app
      desde `http://localhost` (Web Serial no existe en Safari/Firefox ni en
      `http://<ip>`). Si falla al abrir el puerto, cierra el Monitor Serie de Arduino.
+     Si el enlace USB se cae solo a mitad de una captura (pasa: el chip USB-serial se
+     reinicia con el ruido del motor), la app reconecta sola sin pedirte nada.
 5. Los frames crudos se decodifican con la definición `.adx` cargada, y se grafican
    en vivo. El firmware autodetecta 160 vs 8192 baud (ver `CLAUDE.md` para el detalle
    de qué tan validado está cada modo).
@@ -136,15 +138,56 @@ A/C y una vuelta de manejo (~550 frames válidos, sin ningún código de falla).
   ~151 y llega a 161, con el integrador centrado en 128. La ECM está estable, pero necesita
   entre +18 % y +26 % de combustible extra; el sensor viejo lo escondía en parte. Falta medir la
   presión de combustible y revisar el sellado del sensor y la junta del escape.
-- **El cabeceo no se le atribuye al sensor.** Apareció uno con el motor parado después de la
-  vuelta y desapareció al mover un cable; el testigo de la batería casi se encendía, así que la
-  causa fue una mala conexión eléctrica (bornes o cable del alternador). Ese momento cayó en un
-  hueco de 700 s sin frames, por lo que los datos ni lo prueban ni lo descartan.
+- **El cabeceo no se le atribuye al sensor.** Resultó ser otra cosa, y tuvo su propia
+  investigación: ver "Segundo caso real" más abajo.
 - **Aún sin medir:** el arranque en frío con el sensor nuevo, que era el síntoma original.
 
 Ojo al comparar capturas: entre ellas también cambiaron el tiempo base y la limpieza de la IAC,
 y el BLM se reinició. Además la ECM entrega un frame cada ~3.6 s, así que el CSV sirve para
 comparar distribuciones (percentiles), no para ver fallas de encendido ni oscilaciones rápidas.
+
+## Segundo caso real: el cabeceo con el A/C (2026-09-22)
+
+El síntoma llevaba meses: con el A/C encendido, en ralentí y con el camión parado, el motor
+daba tirones — y la aguja del velocímetro se movía sola. Suena a dos fallas distintas. Era una.
+
+Lo primero fue arreglar la herramienta. El firmware estaba descartando **todos** los frames:
+el ECM 1228062 manda un SYNC de **diez** bits en 1 y el código enganchaba a los nueve, así que
+el bit sobrante corría el mensaje entero un bit (`02 27` se leía como `01 13`) y la validación
+por PROM ID lo botaba. Que antes funcionara a ratos era suerte, según dónde empezara a buscar —
+de ahí el 28 % de captura de los logs viejos. Corregido: 100 % de aceptación, cero descartes.
+
+Con datos confiables, la causa salió de experimentos de encender y apagar, no de deducción:
+
+| Prueba | Muestras con velocidad falsa | Desviación de RPM |
+|---|---|---|
+| VSS conectado | 37 % | 41.0 |
+| VSS desconectado | **0 %** | 16.7 |
+| VSS reconectado | 36 % | 53.7 |
+| Con el clutch pisado | 3 de 95 (y las 3 al soltar/pisar) | — |
+| Llave en ON, motor apagado | **0 de 59** | — |
+| Con la resistencia instalada | **0 de 318** | 15.8–18.3 |
+
+La cadena completa: el ralentí áspero (más áspero con la carga del A/C) produce pulsación
+torsional → los engranajes de la transmisión traquetean en neutro (normal en una manual, lo
+confirmó el mecánico) → ese traqueteo sacude el rotor frente al sensor de velocidad → el sensor
+es de reluctancia variable, o sea que genera voltaje con el *movimiento*, no con la velocidad,
+así que suelta un pulso con el camión parado → el DRAC lo cuenta: la aguja se mueve y la ECM
+cree que el camión anda, cambia su estrategia de ralentí y abre la IAC unos 8 pasos → tirón.
+El A/C cierra el círculo porque es lo que pone áspero el ralentí.
+
+Por el camino quedaron **descartados con medición, no con opinión**: el embrague del compresor
+(el síntoma sigue con él desconectado), el ventilador, las luces y el arnés (con llave en ON y
+motor apagado no pasa nunca), el conector del VSS (limpiado), el sensor mismo (nuevo, apretado,
+1437 Ω), el alternador (rizo de AC por debajo de 0.1 V) y las tierras de la transmisión.
+
+**El arreglo:** una resistencia de 1.5 kΩ en paralelo con los dos cables del VSS, en el conector
+de la transmisión, con dos conectores de mordida y sin cortar ningún cable del vehículo. Divide
+la señal a la mitad: el ruido del traqueteo ya no alcanza el umbral del DRAC, pero el pulso real
+de rodar sí. No afecta la exactitud del velocímetro, porque el DRAC cuenta pulsos, no amplitud —
+lo único que sube es la velocidad mínima detectable, de unos 2 a unos 4 MPH.
+
+En resumen: no se cambió ninguna pieza. Se le bajó la ganancia a un sensor demasiado sensible.
 
 ## Licencia
 

@@ -47,8 +47,12 @@ puente WiFi entre el bus ALDL del vehículo y una web app.
   igual que `ws-client.js`; en `main.js` WiFi, USB y simulado se excluyen entre sí.
   Existe para que la computadora no pierda internet (con el ESP8266 en modo AP, conectarse
   por WiFi a su red la deja sin internet, y sin Claude en vivo durante la prueba).
-  Probado con un `navigator.serial` falso + frames reales de `sin_iac.csv`; NO probado
-  aún con un ESP8266 real conectado por USB.
+  Probado con un `navigator.serial` falso + frames reales de `sin_iac.csv`, y ya
+  **confirmado contra el ESP8266 real** (toda la sesión de diagnóstico del 2026-09-22
+  corrió por USB). Reconecta solo si se cae el enlace USB (el chip USB-serial se
+  reinicia con el ruido del motor, o hay un brownout por el hub); el fallo del PRIMER
+  intento tras el clic NO se reintenta en silencio, muestra el motivo real (casi
+  siempre el Monitor Serie de Arduino con el puerto abierto).
 - `src/main.js` + `index.html` + `style.css` — UI: cargar definición,
   tabla estática (XDF) o tarjetas de valores en vivo (ADX).
 - `firmware/esp8266_aldl_bridge/esp8266_aldl_bridge.ino` — firmware de referencia: bit-banging
@@ -101,31 +105,68 @@ según el "Diagrama ALDL NodeMCU" del usuario (2026-09-19):
   cable trenzado y la tierra corta que ya trae el diagrama están instalados en el camión.
   No des por hecho ninguno de los dos.
 
-## Resultado real (2026-09-19; actualizado 2026-09-20)
+## Resultado real (2026-09-19; actualizado 2026-09-22)
 
-El sistema ya cumplió su propósito: los registros del Sonoma ayudaron a encontrar un
-problema que no se veía a simple vista. Con el sensor O2 original (1 hilo, sin calefactor)
-la ECM estaba en lazo cerrado solo ~10 % del tiempo en ralentí caliente (O2 510–560 mV).
-El 2026-09-20 se instaló un Bosch 13026 calefactado (4 cables) y los datos lo **confirman**:
-lazo cerrado ~100 %, O2 ~90–800 mV en ralentí caliente, ningún código (~550 frames).
+El sistema ya cumplió su propósito dos veces: los registros del Sonoma ayudaron a encontrar
+dos problemas que no se veían a simple vista.
+
+**Caso 1 — sensor O2 (resuelto).** Con el original (1 hilo, sin calefactor) la ECM estaba
+en lazo cerrado solo ~10 % del tiempo en ralentí caliente (O2 510–560 mV). El 2026-09-20 se
+instaló un Bosch 13026 calefactado (4 cables) y los datos lo **confirman**: lazo cerrado
+~100 %, O2 ~90–800 mV en ralentí caliente, ningún código (~550 frames).
+
+**Caso 2 — el cabeceo con A/C (resuelto el 2026-09-22).** La causa NO era eléctrica del
+A/C ni el sensor O2: era un **pulso de velocidad falso del VSS**. Cadena completa, cada
+eslabón comprobado con un experimento de encender/apagar, no por deducción:
+
+1. El ralentí áspero (más áspero con la carga del A/C) genera pulsación torsional.
+2. Esa pulsación hace traquetear los engranajes de la transmisión en neutro (normal en
+   manual; lo confirmó el mecánico del usuario).
+3. El traqueteo sacude el rotor frente al VSS, que es de reluctancia variable y genera
+   voltaje con el movimiento, no con la velocidad → pulso falso con el camión parado.
+4. El DRAC cuenta ese pulso: la aguja del velocímetro se mueve sola y la ECM cree que el
+   camión anda → cambia de estrategia de ralentí, abre la IAC ~8 pasos → tirón de RPM.
+
+Evidencia clave: A-B-A con el VSS desconectado (37 % de muestras con VSS≠0 / σRPM 41 →
+**0 %** / σ 16.7 → 36 % / σ 54); pisar el clutch lo mata (3/95 vs 8/21 con el clutch
+suelto); con llave en ON y motor apagado, **0 de 59** (descarta todo acoplamiento
+eléctrico del A/C, ventilador, luces y arnés); el compresor desconectado no lo quita.
+Descartados con medición: compresor, ventilador/luces, arnés, conector del VSS (limpiado),
+el propio sensor (nuevo, apretado, 1437 Ω), alternador (rizo AC < 0.1 V) y las tierras.
+
+**Arreglo instalado y verificado:** una resistencia de **1.5 kΩ en paralelo** con los dos
+cables del VSS en el conector de la transmisión (con dos conectores de mordida, sin cortar
+cable del vehículo). Divide la señal a ~51 %: el ruido del traqueteo ya no llega al umbral
+del DRAC, pero el pulso real de rodar sí. Log de verificación: **0 pulsos falsos en 318
+muestras**, σRPM 15.8–18.3 en ralentí con A/C (igual que con el sensor desconectado), con
+velocímetro funcionando y sin código 24. Trampa al armarla: son DOS cables separados unidos
+solo por la resistencia; si se suelda a dos puntos del mismo cable, queda en corto y mide
+0.000. **Falta:** verificar en carretera a qué velocidad arranca la aguja (debería subir de
+~2 a ~4 MPH) y que siga al GPS a velocidad de crucero.
 
 Lo que sigue abierto (no lo des por resuelto; se trata aparte del desarrollo):
 
 - **BLM ~151 fijo (hasta 161) con INT en 128–131:** la ECM necesita +18–26 % de combustible.
   No se desvanece con la carga (muestra pequeña bajo carga). Pendiente: presión de combustible
-  del TBI, sellado del sensor/junta de escape, mangueras de vacío.
+  del TBI, sellado del sensor/junta de escape, mangueras de vacío. **El usuario lo dejó de
+  lado a propósito el 2026-09-22** para cerrar primero el cabeceo; no lo reabras sin que él lo
+  pida. Desde el 2026-09-22 se ve además que la ECM cierra el lazo mientras calienta (73–78 °C)
+  y **se sale a lazo abierto de ~80 °C en adelante**, con el O2 en 0.0 mV. Falta leer los
+  códigos guardados (puente A-B directo, llave en ON, contar destellos del Check Engine;
+  buscar un 44).
 - **Arranque en frío con el sensor nuevo: sin medir** (el primer log empezó a 48 °C); es la
   prueba que falta para el síntoma original. Captúrala con la web v1 de `main`, no con la de v2.
-- **El cabeceo NO se le atribuye al sensor:** el usuario lo resolvió moviendo un cable
-  (bornes/alternador; el testigo de batería casi se encendía). Ese episodio cayó en un hueco de
-  700 s sin frames, sin datos. No escribas que el sensor lo causaba.
 - **Variables mezcladas entre capturas:** tiempo base (11° → 0° con el conector SET TIMING
   desconectado; con él conectado la ECM lo lleva sola a 16–18° en ralentí), limpieza de la IAC
   y reset del BLM. No compares el BLM entre días como si nada.
 - La ECM entrega 1 frame cada ~3.6 s: los CSV no resuelven fallas de encendido ni oscilaciones
   rápidas del O2. Compara distribuciones (percentiles), no cuentes cruces.
+- **Ojo con los logs anteriores al 2026-09-22:** el firmware descartaba la mayoría de los
+  frames por un desfase de 1 bit (el 1228062 manda un SYNC de DIEZ unos, no nueve). Un log
+  viejo con huecos largos no significa que la ECM dejara de hablar. Ya corregido: 100 % de
+  aceptación, 0 descartes.
 
-Detalle para humanos en el README ("Primer caso real").
+Detalle para humanos en el README ("Primer caso real" y "Segundo caso real").
 
 ## Pendiente (backlog real, en orden sugerido)
 
