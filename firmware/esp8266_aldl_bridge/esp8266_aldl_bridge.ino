@@ -195,6 +195,17 @@ bool readAldlFrame160(uint8_t* out, size_t frameLen) {
   // necesariamente el inicio real de un mensaje), causando un desfase que
   // se acumulaba de a 1 byte por frame cuando los mensajes vienen seguidos
   // (poco hueco de silencio entre ellos, como con el motor encendido).
+  // Fase 0: no empezar a cazar a media celda. readAldlBit160() da por hecho que
+  // la línea está en alto y que el próximo flanco de bajada abre una celda nueva;
+  // si entramos con la línea ya en bajo (a mitad de un pulso, que es lo normal
+  // justo después de terminar el frame anterior), mide un pulso parcial y el
+  // conteo de bits arranca desfasado. Esperar al alto cuesta como mucho una celda.
+  unsigned long alignStart = micros();
+  while (digitalRead(ALDL_PIN) == LOW) {
+    if ((unsigned long)(micros() - alignStart) > (unsigned long)ALDL_BIT_US * 2) break; // línea pegada en bajo
+    yield();
+  }
+
   uint16_t shiftReg = 0;
   unsigned long huntStart = millis();
   while (true) {
@@ -207,9 +218,27 @@ bool readAldlFrame160(uint8_t* out, size_t frameLen) {
     if (shiftReg == ALDL_SYNC) break;
   }
 
+  // Fase 1b: agotar la racha de unos antes de grabar nada. ALDL_SYNC son NUEVE
+  // 1-bits, pero el 1228062 manda DIEZ (medido con captura de anchos de pulso en
+  // el Sonoma: diez L4400 seguidos antes de cada mensaje). Enganchar a los nueve
+  // dejaba el bit sobrante como primer bit del primer grupo y corría el mensaje
+  // entero un bit - los frames salían divididos por 2 (02 27 -> 01 13) y el
+  // chequeo de PROM ID los descartaba. Que a veces sí alineara era suerte: la
+  // caza empieza en un punto cualquiera del pulso, así que a veces contaba solo
+  // nueve de los diez unos (de ahí el 28% de frames capturados del log 04:06Z).
+  // Cada byte viaja como [bit de arranque en 0][8 bits de datos], así que ningún
+  // dato puede dar nueve unos seguidos (0xFF da ocho, cortados por el arranque
+  // del siguiente byte): el primer 0 tras la racha es el arranque del primer byte.
+  int firstBit;
+  do {
+    if (millis() - huntStart > 3000) return false;
+    firstBit = readAldlBit160((unsigned long)ALDL_BIT_US * 3);
+    if (firstBit < 0) return false;
+  } while (firstBit == 1);
+
   // Fase 2: ya alineados justo después de un SYNC real - ahora sí se capturan
-  // los frameLen bytes del mensaje.
-  int bitCount = 0;
+  // los frameLen bytes del mensaje. Arranca con el bit de arranque ya leído.
+  int bitCount = 1;
   size_t byteIdx = 0;
   unsigned long frameStart = millis();
   shiftReg = 0;
@@ -224,7 +253,14 @@ bool readAldlFrame160(uint8_t* out, size_t frameLen) {
     bitCount++;
 
     if (shiftReg == ALDL_SYNC) {
-      bitCount = 0; // resync de emergencia si aparece otro sync a mitad de frame
+      // Resync de emergencia si aparece otro sync a mitad de frame: agotar
+      // también aquí la racha de unos, por la misma razón que en la fase 1b.
+      do {
+        bit = readAldlBit160((unsigned long)ALDL_BIT_US * 3);
+        if (bit < 0) return false;
+      } while (bit == 1);
+      shiftReg = 0;
+      bitCount = 1;
       continue;
     }
 
