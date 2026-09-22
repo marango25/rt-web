@@ -322,7 +322,8 @@ const serialBridge = new SerialBridgeClient({
   onFrame: applyFrame,
   onStatus: (state, detail) => {
     setStatus(state, detail);
-    el.usbBtn.textContent = state === "conectado" ? "Desconectar USB" : "Conectar por USB";
+    el.usbBtn.textContent =
+      state === "conectado" ? "Desconectar USB" : state === "reconectando" ? "Cancelar reconexión" : "Conectar por USB";
   },
 });
 
@@ -349,8 +350,8 @@ el.connectBtn.addEventListener("click", async () => {
 });
 
 el.usbBtn.addEventListener("click", async () => {
-  if (serialBridge.connected) {
-    await serialBridge.disconnect();
+  if (serialBridge.connected || serialBridge.reconnecting) {
+    await serialBridge.disconnect(); // conectado: corta. reintentando: cancela el reintento (no abre el diálogo de puerto de nuevo).
     return;
   }
   sim.stop();

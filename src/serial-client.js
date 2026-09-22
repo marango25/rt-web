@@ -14,25 +14,58 @@
  * (las versiones viejas del firmware la imprimen sin el "(160 baud)"). Todo lo
  * demás que salga por el puerto (mensajes de arranque, "Sin datos ALDL...")
  * se ignora. Se llama onFrame(bytes, t, proto) igual que ws-client.js.
+ *
+ * Reconexión automática: a diferencia de un cable que se sale físicamente,
+ * en pruebas reales el corte típico es el chip USB-serial (CH340/CP2102) del
+ * NodeMCU reiniciándose solo por ruido eléctrico del auto con el motor
+ * encendido (ver docs/electronica.md - el pin A del ALDL ata la tierra del
+ * NodeMCU a la del vehículo, así que el ruido del motor/alternador puede
+ * colarse por ahí hasta el puerto USB) - el ESP8266 en sí sigue corriendo,
+ * solo se cae el enlace USB visto desde el navegador. Como el permiso del
+ * puerto ya lo dio el usuario una vez, reabrir NO necesita un gesto nuevo
+ * (a diferencia de requestPort()), así que tras un corte no propio de
+ * disconnect() reintentamos solos: de inmediato si navigator.serial avisa
+ * que el puerto volvió a aparecer, y si no, cada RECONNECT_DELAY_MS.
  */
 
 const BAUD_RATE = 115200;
 const FRAME_LINE = /Frame ALDL(?:\s*\((\d+)\s*baud[^)]*\))?:\s*((?:[0-9A-Fa-f]{2}\s*)+)$/;
 const MAX_LINE_BUFFER = 4096; // si llega basura sin ningún salto de línea, no dejar crecer el buffer sin límite
+const RECONNECT_DELAY_MS = 2000;
 
 export class SerialBridgeClient {
   constructor({ onFrame, onStatus }) {
     this.onFrame = onFrame || (() => {});
     this.onStatus = onStatus || (() => {});
-    this.port = null;
+    this.port = null; // solo no-null mientras el puerto está abierto y leyendo
     this.reader = null;
     this.connected = false;
     this._closing = false;
     this._loopDone = null;
+
+    this._grantedPort = null; // puerto ya autorizado por el usuario - se conserva tras un corte
+                               // para poder reabrirlo sin el diálogo de permiso (ese sí exige clic)
+    this._wantConnected = false; // true desde que connect() consigue puerto hasta un disconnect() a propósito
+    this._opening = false; // evita dos reaperturas al mismo tiempo (timer + evento "connect" juntos)
+    this._reconnectTimer = null;
+
+    this._onPortConnect = this._onPortConnect.bind(this);
+    if (SerialBridgeClient.supported) {
+      // Se dispara cuando un puerto YA autorizado reaparece en el bus USB - el caso típico
+      // aquí es el chip USB-serial reiniciándose solo por ruido, no un cable real reconectado.
+      navigator.serial.addEventListener("connect", this._onPortConnect);
+    }
   }
 
   static get supported() {
     return typeof navigator !== "undefined" && "serial" in navigator;
+  }
+
+  /** true mientras estamos entre un corte no pedido y el siguiente intento de reabrir
+   * (para que la UI pueda distinguirlo de "nunca conectado" y ofrecer cancelar en vez
+   * de abrir el diálogo de puerto de nuevo). */
+  get reconnecting() {
+    return this._wantConnected && !this.connected;
   }
 
   /** Debe llamarse desde un click: requestPort() exige un gesto del usuario. */
@@ -42,6 +75,7 @@ export class SerialBridgeClient {
       return;
     }
 
+    clearTimeout(this._reconnectTimer);
     this.onStatus("conectando", "USB");
     let port;
     try {
@@ -53,14 +87,37 @@ export class SerialBridgeClient {
       return;
     }
 
+    this._grantedPort = port;
+    this._wantConnected = true;
+    await this._openPort(port, false);
+  }
+
+  /** Abre (o reabre) un puerto ya autorizado. No pide permiso - sirve tanto para la
+   * primera conexión (llamada desde connect(), isReconnect=false) como para las
+   * reconexiones automáticas. */
+  async _openPort(port, isReconnect = true) {
+    if (this._opening || this.connected) return;
+    this._opening = true;
     try {
       await port.open({ baudRate: BAUD_RATE });
     } catch (err) {
-      this.onStatus("error", "no se pudo abrir el puerto - ¿lo tiene abierto el Monitor Serie de Arduino?");
+      this._opening = false;
       console.warn("Web Serial open() falló:", err);
+      if (isReconnect) {
+        this.onStatus("reconectando", "USB - reintentando...");
+        this._scheduleReconnect();
+      } else {
+        // Primer intento tras el clic: el fallo casi siempre tiene una causa
+        // concreta y accionable (otro programa con el puerto abierto). Reintentar
+        // en silencio la esconde detrás de un "reconectando..." eterno, así que
+        // aquí se muestra el motivo y se cancela la reconexión automática.
+        this._wantConnected = false;
+        this.onStatus("error", "no se pudo abrir el puerto - ¿lo tiene abierto el Monitor Serie de Arduino?");
+      }
       return;
     }
 
+    this._opening = false;
     this.port = port;
     this.connected = true;
     this._closing = false;
@@ -68,8 +125,29 @@ export class SerialBridgeClient {
     this._loopDone = this._readLoop(port);
   }
 
+  _scheduleReconnect() {
+    clearTimeout(this._reconnectTimer);
+    this._reconnectTimer = setTimeout(() => {
+      if (this._wantConnected && this._grantedPort) this._openPort(this._grantedPort);
+    }, RECONNECT_DELAY_MS);
+  }
+
+  _onPortConnect(evt) {
+    if (!this._wantConnected || this.connected || evt.target !== this._grantedPort) return;
+    clearTimeout(this._reconnectTimer);
+    this._openPort(this._grantedPort);
+  }
+
   async disconnect() {
-    if (!this.port) return;
+    this._wantConnected = false;
+    clearTimeout(this._reconnectTimer);
+    if (!this.port) {
+      // No hay lectura activa que cerrar - o nunca se conectó, o esto cancela un
+      // reintento automático en curso (ver reconnecting). En ese segundo caso avisa,
+      // porque si no la UI se queda mostrando "reconectando" para siempre.
+      if (this.connected === false) this.onStatus("desconectado", "USB");
+      return;
+    }
     this._closing = true;
     try {
       await this.reader?.cancel(); // hace que read() devuelva done=true y termine el loop de lectura
@@ -85,7 +163,7 @@ export class SerialBridgeClient {
 
     // Patrón canónico de Web Serial: los errores no fatales (framing, overrun) dejan
     // port.readable vivo y se reintenta con un reader nuevo; los fatales (cable
-    // desconectado) lo dejan en null y el while termina.
+    // desconectado, o el chip USB-serial reiniciándose solo) lo dejan en null y el while termina.
     while (port.readable && !this._closing) {
       const reader = port.readable.getReader();
       this.reader = reader;
@@ -120,8 +198,12 @@ export class SerialBridgeClient {
     this.connected = false;
     this._closing = false;
 
-    if (userInitiated) this.onStatus("desconectado", "USB");
-    else this.onStatus("error", "USB desconectado");
+    if (userInitiated) {
+      this.onStatus("desconectado", "USB");
+    } else {
+      this.onStatus("reconectando", "USB desconectado - reintentando...");
+      if (this._wantConnected) this._scheduleReconnect();
+    }
   }
 
   _handleLine(line) {
