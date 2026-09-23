@@ -594,6 +594,27 @@ table.data-table th {
   margin-left: 4px;
 }
 
+/* Banderas de 1 bit (lazo abierto/cerrado, códigos, A/C...): el texto del
+   estado es el dato, así que va más chico que un número pero en mayúsculas y
+   con color, para leer de un vistazo cuál está activa y cuál no. */
+.param-card .flag-value {
+  font-size: 16px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.param-card .flag-value.on {
+  color: var(--accent);
+}
+
+.param-card .flag-value.off {
+  color: var(--text-dim);
+}
+
+.param-card.flag-card.warn-range .flag-value {
+  color: var(--danger);
+}
+
 .param-card canvas.sparkline {
   display: block;
   width: 100%;

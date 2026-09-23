@@ -25,18 +25,11 @@
        RPM". El firmware ahora valida el PROM ID (constante, bytes 1-2) antes
        de mandar cada frame, y descarta los que no calzan.
 
-    NO incluido (limitación actual de este proyecto, no del archivo original):
-      - PROM ID (16 bits, bytes 1-2 de este archivo): es un ID estático de la
-        ROM, no un sensor en vivo, y además requeriría ensamblar 2 bytes -
-        byteLength>1 todavía no se combina en applyFrame() (main.js solo lee
-        un byte). Sí se usa en el firmware (ALDL_PROM_ID_HI/LO) para validar
-        que un frame esté bien alineado antes de mandarlo.
-      - Toda la sección BITS del .ads: banderas de 1 bit (códigos de falla,
-        loop status abierto/cerrado, P/N switch, TCC, A/C request, etc.) -
-        son flags booleanos dentro de un byte, un tipo de parámetro que este
-        proyecto todavía no soporta (solo valores numéricos por byte/ecuación
-        o tabla). El .ads original completo quedó en ~/Downloads/A040.ads si
-        se necesita agregar soporte a esto más adelante.
+    YA INCLUIDO (2026-09-22): el PROM ID de 16 bits y la sección BITS del .ads.
+    Antes faltaban porque el parser solo leía un byte por parámetro; ahora
+    ParsedParameter soporta bytelength="2" (big-endian), signed="true" y
+    bit="0..7" (bit 0 = LSB, la convención del .ads). El .ads original completo
+    quedó en ~/Downloads/A040.ads.
 
     Esto SÍ es un mapeo real de un ECM real (a diferencia de defs/example.adx,
     que es inventado), y ya validado contra una captura larga con el motor
@@ -67,6 +60,80 @@
 
   <PARAMETERGROUP name="Electrico">
     <PARAMETER id="batt" name="Voltaje bateria" units="V" byteindex="15" bytelength="1" equation="X*0.1" />
+  </PARAMETERGROUP>
+
+  <!--
+    BANDERAS DE 1 BIT. bit="N" con bit 0 = LSB (convención del .ads).
+    invert="true" para las activas en bajo. alertif="true|false" marca en rojo
+    el estado que interesa cazar.
+
+    De dónde salen: sección BITS de A040.ads, más dos deducidas de los logs
+    (marcadas abajo). Validadas contra 16 logs del Sonoma del 20 al 22-sep.
+
+    El hallazgo del 2026-09-22 que hace que valga la pena tenerlas en pantalla:
+    la ECM sale a lazo ABIERTO en ralentí (no por temperatura - manejando a
+    96 °C cierra el lazo el 100 % del tiempo). Sin estas banderas eso solo se
+    veía decodificando raw_frame con un script aparte.
+  -->
+  <PARAMETERGROUP name="Estado de la mezcla">
+    <PARAMETER id="loop" name="Lazo de control" byteindex="14" bit="7"
+               truelabel="Cerrado" falselabel="Abierto" alertif="false" />
+    <PARAMETER id="rich_lean" name="Mezcla (O2)" byteindex="14" bit="6"
+               truelabel="Rica" falselabel="Pobre" />
+    <PARAMETER id="blm_enable" name="BLM habilitado" byteindex="14" bit="1"
+               truelabel="Si" falselabel="No" />
+    <!-- b0 viene invertido en el .ads: 1 = NO esta en open loop idle. -->
+    <PARAMETER id="ol_idle" name="Open Loop Idle" byteindex="14" bit="0" invert="true"
+               truelabel="Si" falselabel="No" />
+    <PARAMETER id="async_fuel" name="Inyeccion asincrona" byteindex="14" bit="4"
+               truelabel="Si" falselabel="No" />
+  </PARAMETERGROUP>
+
+  <PARAMETERGROUP name="Codigos de falla">
+    <!--
+      Solo estan mapeados los tres codigos que el .ads identifica por bit. Los
+      bytes 11, 12 y 13 completos guardan todos los codigos: si CUALQUIERA de
+      los tres es distinto de 0x00 hay un codigo, aunque no este mapeado aqui.
+      En los 16 logs del Sonoma los tres valen 0x00 siempre (ningun codigo).
+    -->
+    <PARAMETER id="code_13" name="Codigo 13 (O2 abierto)" byteindex="11" bit="6"
+               truelabel="FALLA" falselabel="ok" alertif="true" />
+    <PARAMETER id="code_44" name="Codigo 44 (O2 pobre)" byteindex="13" bit="6"
+               truelabel="FALLA" falselabel="ok" alertif="true" />
+    <PARAMETER id="code_45" name="Codigo 45 (O2 rico)" byteindex="13" bit="5"
+               truelabel="FALLA" falselabel="ok" alertif="true" />
+  </PARAMETERGROUP>
+
+  <PARAMETERGROUP name="Entradas y salidas">
+    <!-- A/C Request es activo en bajo: el bit en 0 significa A/C pedido. -->
+    <PARAMETER id="ac_req" name="A/C pedido" byteindex="16" bit="7" invert="true"
+               truelabel="Si" falselabel="No" />
+    <!-- No esta en el .ads: deducida de los logs el 2026-09-22 (sigue a
+         ac_req siempre que el motor gire; con llave ON y motor apagado vale 0
+         aunque se pida A/C). -->
+    <PARAMETER id="ac_clutch" name="Embrague del compresor" byteindex="16" bit="2"
+               truelabel="Enganchado" falselabel="Suelto" />
+    <PARAMETER id="pn_switch" name="Park / Neutral" byteindex="16" bit="4"
+               truelabel="P/N" falselabel="En marcha" />
+    <PARAMETER id="tcc" name="TCC trabado" byteindex="16" bit="3"
+               truelabel="Si" falselabel="No" />
+    <PARAMETER id="air_switch" name="AIR al escape" byteindex="16" bit="0"
+               truelabel="Si" falselabel="No" />
+    <PARAMETER id="air_divert" name="AIR desviado" byteindex="16" bit="1"
+               truelabel="Si" falselabel="No" />
+    <!-- Vale 0 con la llave en ON y el motor apagado: sirve para comprobar
+         que el byte 0 esta bien mapeado. -->
+    <PARAMETER id="ref_pulse" name="Pulso de referencia" byteindex="0" bit="2"
+               truelabel="Si" falselabel="No" />
+  </PARAMETERGROUP>
+
+  <PARAMETERGROUP name="Identificacion">
+    <!--
+      16 bits big-endian. Es constante (0x0227 = 551 en este ECM): sirve de
+      comprobacion de alineamiento, es lo mismo que valida el firmware con
+      ALDL_PROM_ID_HI/LO antes de mandar cada frame.
+    -->
+    <PARAMETER id="prom_id" name="PROM ID" byteindex="1" bytelength="2" equation="X" />
   </PARAMETERGROUP>
 
   <LOOKUPTABLE id="coolant_c">

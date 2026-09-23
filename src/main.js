@@ -85,8 +85,12 @@ function applyFrame(rawBytes, t, proto) {
   const stuckLabels = []; // se suman a la columna "evento", junto a lo marcado manualmente
 
   loadedParams.forEach((p) => {
-    const raw = rawBytes[p.byteIndex] ?? 0;
-    const value = p.evaluate(raw);
+    // p.read() saca el crudo del frame (1 o 2 bytes, con signo o no, o un solo
+    // bit si es bandera) y le aplica la ecuación/tabla. Un frame más corto de
+    // lo que pide el parámetro devuelve null: se salta, en vez de registrar un
+    // 0 que después parece un dato real.
+    const value = p.read(rawBytes);
+    if (value === null) return;
     currentValues[p.id] = value;
 
     const hist = paramHistory[p.id] || (paramHistory[p.id] = []);
@@ -149,7 +153,14 @@ function downloadLog() {
   ];
   const rows = sessionLog.map((entry) => {
     const iso = new Date(entry.t).toISOString();
-    const vals = loadedParams.map((p) => (entry.values[p.id] !== undefined ? entry.values[p.id].toFixed(3) : ""));
+    // Las banderas salen como 1/0 enteros (no "1.000"): así el CSV se sigue
+    // pudiendo leer como números en el replay y en cualquier script, y no
+    // aparece un booleano disfrazado de medida con tres decimales.
+    const vals = loadedParams.map((p) => {
+      const v = entry.values[p.id];
+      if (v === undefined) return "";
+      return p.isFlag ? String(v ? 1 : 0) : v.toFixed(3);
+    });
     const evento = csvField(entry.evento || "");
     const fueraDeRango = csvField(entry.fueraDeRango || "");
     const rawHex = csvField(entry.raw ? bytesToHex(entry.raw) : "");
@@ -447,6 +458,7 @@ function matchParamForAxisLabel(label) {
   let best = null;
   let bestScore = 0;
   loadedParams.forEach((p) => {
+    if (p.isFlag) return; // un booleano no sirve de eje de tabla (RPM, MAP...)
     const pNorm = normalizeLabel(p.name);
     if (!pNorm) return;
     let score = 0;
@@ -518,7 +530,10 @@ function buildTablesHtml() {
 
       const paramOptionsHtml = (selectedId) =>
         `<option value="">(auto)</option>` +
-        loadedParams.map((p) => `<option value="${p.id}"${p.id === selectedId ? " selected" : ""}>${p.name}</option>`).join("");
+        loadedParams
+          .filter((p) => !p.isFlag) // las banderas no se ofrecen como eje: no son magnitudes
+          .map((p) => `<option value="${p.id}"${p.id === selectedId ? " selected" : ""}>${p.name}</option>`)
+          .join("");
 
       const headerRow = `<tr><th></th>${t.xAxis.map((v) => `<th>${v}</th>`).join("")}</tr>`;
 
@@ -594,6 +609,14 @@ function updateTableHighlights() {
 
 /** Evalúa alertas de rango y "valor congelado" para un parámetro. Devuelve { outOfRange, isStuck, stuckSec }. */
 function evaluateAlerts(p, value, now) {
+  // Una bandera no tiene "rango": su alerta es estar en el estado que el .adx
+  // marcó con alertif (ej. lazo abierto, o un código de falla presente). Y la
+  // alerta de "congelado" no aplica: un booleano estable es lo normal.
+  if (p.isFlag) {
+    const outOfRange = value !== undefined && p.alertIf !== null && !!value === p.alertIf;
+    return { outOfRange, isStuck: false, stuckSec: 0 };
+  }
+
   const outOfRange = value !== undefined && ((p.warnMin != null && value < p.warnMin) || (p.warnMax != null && value > p.warnMax));
 
   let isStuck = false;
@@ -624,23 +647,38 @@ function buildLiveHtml() {
       const isExpanded = p.id === expandedParamId;
       const { outOfRange, isStuck, stuckSec } = evaluateAlerts(p, v, now);
 
-      if (outOfRange) alerts.push({ type: "range", text: `${p.name}: ${v.toFixed(2)} ${p.units} fuera del rango esperado (${p.warnMin ?? "-∞"} a ${p.warnMax ?? "∞"})` });
+      if (outOfRange) {
+        alerts.push({
+          type: "range",
+          text: p.isFlag
+            ? `${p.name}: ${p.format(v)}`
+            : `${p.name}: ${v.toFixed(2)} ${p.units} fuera del rango esperado (${p.warnMin ?? "-∞"} a ${p.warnMax ?? "∞"})`,
+        });
+      }
       if (isStuck) alerts.push({ type: "stuck", text: `${p.name}: sin cambios hace ${stuckSec}s (valor congelado en ${v.toFixed(2)} ${p.units})` });
 
       const cardClasses = ["param-card"];
       if (isExpanded) cardClasses.push("active");
+      if (p.isFlag) cardClasses.push("flag-card");
       if (outOfRange) cardClasses.push("warn-range");
       if (isStuck) cardClasses.push("warn-stuck");
 
       const badges = [
-        outOfRange ? `<span class="card-badge range">rango</span>` : "",
+        outOfRange && !p.isFlag ? `<span class="card-badge range">rango</span>` : "",
         isStuck ? `<span class="card-badge stuck">congelado</span>` : "",
       ].join("");
+
+      // Una bandera no tiene unidades ni curva que valga la pena: se muestra
+      // la etiqueta (CERRADO/ABIERTO) en grande y una franja de historia que
+      // deja ver cuánto tiempo lleva en cada estado.
+      const valueHtml = p.isFlag
+        ? `<div class="value flag-value ${v ? "on" : "off"}">${p.format(v)}</div>`
+        : `<div class="value">${v !== undefined ? v.toFixed(2) : "--"}<span class="units">${p.units}</span></div>`;
 
       return `
         <div class="${cardClasses.join(" ")}" data-param-id="${p.id}">
           <div class="name">${p.name}${badges}</div>
-          <div class="value">${v !== undefined ? v.toFixed(2) : "--"}<span class="units">${p.units}</span></div>
+          ${valueHtml}
           <canvas class="sparkline" width="300" height="48"></canvas>
         </div>
       `;
@@ -780,12 +818,17 @@ function fracXFromEvent(canvas, evt) {
   return Math.max(0, Math.min(1, (evt.clientX - rect.left) / rect.width));
 }
 
-/** rows: [{ label, value, units, t (ms epoch, opcional), color }] */
+/**
+ * rows: [{ label, value, units, t (ms epoch, opcional), color, text }]
+ * `text` gana sobre `value` cuando el valor no se lee como número - es lo que
+ * usan las banderas de 1 bit para decir "Cerrado" en vez de "1.00".
+ */
 function showTooltip(clientX, clientY, rows) {
   tooltipEl.innerHTML = rows
     .map((r) => {
-      const valStr =
-        r.value !== undefined && !Number.isNaN(r.value) ? `${r.value.toFixed(2)} ${r.units || ""}`.trim() : "sin dato";
+      const valStr = r.text
+        ? r.text
+        : r.value !== undefined && !Number.isNaN(r.value) ? `${r.value.toFixed(2)} ${r.units || ""}`.trim() : "sin dato";
       const timeStr = r.t ? `<span class="tt-time">${new Date(r.t).toLocaleTimeString()}</span>` : "";
       return `<div class="row"><span class="dot" style="background:${r.color}"></span><span class="tt-label">${r.label}:</span> <b>${valStr}</b> ${timeStr}</div>`;
     })
@@ -1608,7 +1651,14 @@ el.main.addEventListener("mousemove", (evt) => {
   const idx = Math.round(frac * (hist.length - 1));
   const times = paramHistoryTimes[param.id];
   showTooltip(evt.clientX, evt.clientY, [
-    { label: param.name, value: hist[idx], units: param.units, t: times ? times[idx] : null, color: "#5fb3a3" },
+    {
+      label: param.name,
+      value: hist[idx],
+      units: param.units,
+      text: param.isFlag ? param.format(hist[idx]) : null,
+      t: times ? times[idx] : null,
+      color: "#5fb3a3",
+    },
   ]);
   drawChart(canvas, hist, { showLabels: canvas.classList.contains("sparkline-big"), hoverFrac: frac });
 });

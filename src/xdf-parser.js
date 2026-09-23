@@ -8,6 +8,10 @@
  *  - XDF: <XDFFORMAT> con <TABLE>, <EMBEDDEDDATA offset=... />, <MATH equation=... />
  *  - ADX: <ADXFORMAT> con <PARAMETERGROUP>, <PARAMETER> con id/units/equation
  *
+ * Un <PARAMETER> de ADX puede ser un valor numérico (1 o 2 bytes big-endian,
+ * con signo opcional, por ecuación o tabla de lookup) o una bandera de 1 bit
+ * con `bit="0..7"` (bit 0 = LSB, la convención del .ads de TunerPro/WinALDL).
+ *
  * No cubrimos aún: banks/switches complejos, checksums embebidos en XDF,
  * ni todas las variantes de <MATH> (soportamos expresiones simples tipo
  * lineales "X*a+b" que es el 90% de los casos reales).
@@ -65,7 +69,24 @@ function interpolateTable(table, x) {
 }
 
 export class ParsedParameter {
-  constructor({ id, name, units, equation, byteIndex, byteLength, table, warnMin, warnMax, flatAlert }) {
+  constructor({
+    id,
+    name,
+    units,
+    equation,
+    byteIndex,
+    byteLength,
+    table,
+    warnMin,
+    warnMax,
+    flatAlert,
+    bit,
+    invert,
+    trueLabel,
+    falseLabel,
+    signed,
+    alertIf,
+  }) {
     this.id = id;
     this.name = name;
     this.units = units;
@@ -76,6 +97,70 @@ export class ParsedParameter {
     this.warnMin = warnMin ?? null; // si el valor cae debajo, se marca la tarjeta como fuera de rango
     this.warnMax = warnMax ?? null;
     this.flatAlert = !!flatAlert; // si true, avisa cuando el valor no cambia por mucho tiempo (sensor "pegado")
+
+    // --- banderas de 1 bit (lazo abierto/cerrado, códigos de falla, A/C, P/N...) ---
+    // `bit` = 0..7 con bit 0 = LSB, la convención del .ads de TunerPro/WinALDL.
+    this.bit = Number.isInteger(bit) && bit >= 0 && bit <= 7 ? bit : null;
+    this.invert = !!invert; // algunas banderas son activas en bajo (ej. A/C Request del A040)
+    this.trueLabel = trueLabel || "Sí";
+    this.falseLabel = falseLabel || "No";
+    this.alertIf = alertIf === true || alertIf === false ? alertIf : null; // estado que levanta la alerta
+    this.signed = !!signed; // complemento a dos (ej. correcciones con signo)
+  }
+
+  /** true si este parámetro es una bandera booleana de 1 bit y no un valor numérico. */
+  get isFlag() {
+    return this.bit !== null;
+  }
+
+  /**
+   * Valor crudo del parámetro dentro de un frame ALDL. Soporta 1 y 2 bytes
+   * (big-endian, como manda el ALDL) y complemento a dos si `signed`.
+   * Devuelve null si el frame es más corto de lo que pide el parámetro -
+   * mejor eso que un 0 silencioso que se ve como un dato real.
+   */
+  readRaw(bytes) {
+    const hi = bytes[this.byteIndex];
+    if (hi === undefined) return null;
+
+    if (this.byteLength >= 2) {
+      const lo = bytes[this.byteIndex + 1];
+      if (lo === undefined) return null;
+      const v = ((hi << 8) | lo) >>> 0;
+      return this.signed && v & 0x8000 ? v - 0x10000 : v;
+    }
+    return this.signed && hi & 0x80 ? hi - 0x100 : hi;
+  }
+
+  /** Estado de la bandera en un frame. null si no es bandera o el frame es corto. */
+  readFlag(bytes) {
+    if (!this.isFlag) return null;
+    const byte = bytes[this.byteIndex];
+    if (byte === undefined) return null;
+    const on = ((byte >> this.bit) & 1) === 1;
+    return this.invert ? !on : on;
+  }
+
+  /**
+   * Valor listo para guardar/graficar desde un frame completo. Las banderas
+   * salen como 1/0 (y no como texto) para que el histórico, las gráficas y
+   * el CSV sigan siendo numéricos como siempre; la etiqueta legible la pone
+   * `format()` al dibujar.
+   */
+  read(bytes) {
+    if (this.isFlag) {
+      const on = this.readFlag(bytes);
+      return on === null ? null : on ? 1 : 0;
+    }
+    const raw = this.readRaw(bytes);
+    return raw === null ? null : this.evaluate(raw);
+  }
+
+  /** Texto para mostrar: la etiqueta de la bandera, o el número con decimales. */
+  format(value, decimals = 2) {
+    if (value === null || value === undefined) return "--";
+    if (this.isFlag) return value ? this.trueLabel : this.falseLabel;
+    return value.toFixed(decimals);
   }
 
   /** Aplica la ecuación (o tabla, si existe) a un valor crudo. */
@@ -215,6 +300,8 @@ export function parseADX(xmlText) {
     const tableId = attrOf(p, "table", "");
     const warnMinRaw = attrOf(p, "warnmin", "");
     const warnMaxRaw = attrOf(p, "warnmax", "");
+    const bitRaw = attrOf(p, "bit", "");
+    const alertIfRaw = attrOf(p, "alertif", "");
     parameters.push(
       new ParsedParameter({
         id: attrOf(p, "id", attrOf(p, "address", "0x00")),
@@ -227,6 +314,12 @@ export function parseADX(xmlText) {
         warnMin: warnMinRaw !== "" ? parseFloat(warnMinRaw) : null,
         warnMax: warnMaxRaw !== "" ? parseFloat(warnMaxRaw) : null,
         flatAlert: attrOf(p, "flatalert", "false") === "true",
+        bit: bitRaw !== "" ? parseInt(bitRaw, 10) : null,
+        invert: attrOf(p, "invert", "false") === "true",
+        trueLabel: attrOf(p, "truelabel", "Sí"),
+        falseLabel: attrOf(p, "falselabel", "No"),
+        alertIf: alertIfRaw === "true" ? true : alertIfRaw === "false" ? false : null,
+        signed: attrOf(p, "signed", "false") === "true",
       })
     );
   });

@@ -73,8 +73,8 @@ reflashear con la corrección de bit-banging de esta sesión). Vehículo/ECU
 confirmado: **GMC Sonoma 1993, 2.8L TBI, 5 vel. manual, 4x2, A/C** — ECM
 **1228062**, definición ALDL **"A040"**, 160 baud, dato por pin A8/naranja
 (ECM) = pin E (conector ALDL). Definición real ya convertida a
-`defs/gmc_sonoma_1993_a040.adx` (ver ese archivo para detalle de qué falta:
-flags de 1 bit, PROM ID de 16 bits). Falta cablear el naranja al nivel-shifter
+`defs/gmc_sonoma_1993_a040.adx` (completa desde el 2026-09-22: incluye las
+15 banderas de 1 bit y el PROM ID de 16 bits). Falta cablear el naranja al nivel-shifter
 y conectar con la llave en "on" para probar contra el auto real.
 
 (Actualización 2026-09-19: lo de arriba es historial; el montaje ya está armado y
