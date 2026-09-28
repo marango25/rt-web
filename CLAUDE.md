@@ -270,7 +270,15 @@ entre bujía y cabeza** (bujía floja, asiento sucio o rosca torcida; ese lado e
 si son de asiento cónico dependen del apriete). Cómo separarlas: limpiar asientos, reinstalar con
 torque de la caja/manual, agua jabonosa en la base en ralentí (burbujas = fuga), y revisar una bujía
 en unos días: rosca limpia y sin fallito = era el sello; punta mojada de aceite otra vez = aceite en
-la cámara → compresión. Pendiente: cómo las apretó y si son con arandela o asiento cónico. Una bancada entera quemando aceite. Explica el fallo intermitente de
+la cámara → compresión.
+**Respondido (2026-09-28): bujías NGK UR5GP, ASIENTO CÓNICO (sin arandela), apretadas a ojo con
+matraca.** El cono es el único sello; NGK indica para asiento cónico "a mano hasta asentar + 1/16 de
+vuelta" (confirmar en la caja/tabla NGK). La foto de una bujía completa muestra la rosca negra y
+brillante hasta el asiento y un anillo húmedo en la unión: huella de fuga por el asiento. **La fuga de
+gases entre bujía y cabeza pasa a ser la explicación más probable** del ensuciamiento de un solo lado.
+PCV y base del TBI con "una untadita" de aceite: normal en un motor con kilómetros, y el PCV reparte a
+las dos bancadas por igual (no explica un solo lado); comprobaciones dadas: que la PCV suene al
+agitarla y soplido por el tapón de aceite en ralentí (mucho = anillos). Una bancada entera quemando aceite. Explica el fallo intermitente de
 ralentí (bujía aceitada que pierde chispa en frío/ralentí y se limpia con carga → por eso se quita con
 el compresor), el pop en el mofle y que todos los cilindros reaccionaran en la prueba de cables; y el
 aceite en cámara baja el octanaje efectivo (posible aporte a la detonación, sin probar). Sospechosos
