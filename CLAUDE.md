@@ -232,6 +232,21 @@ aunque el log no muestra caídas pobres del O2 en ralentí caliente (730-890 mV)
 17-17.8 inHg. (2) **Tubos y válvulas check del AIR:** sin flujo de aire, una check que fuga o un tubo
 roto al múltiple deja salir escape = soplido/pop rítmico en ralentí; escuchar ahí. (3) ¿La banda de la
 bomba AIR está puesta?
+**Resuelto el mismo día: el AIR NO es.** Puerto de vacío tapado; bomba con banda, girando y soplando
+suelta; probó extender/tapar el lado del escape y el pop no cambió. El pop se oye en el **mofle** y
+se **siente en el motor** como un fallito.
+**Lo que sí muestra el log `2026-09-28T22-49-18` (ralentí caliente 85 °C, sin A/C, lazo abierto, 6
+min):** 22 caídas a ≤750 RPM (hasta 675) en 5.9 min, **y en cada caída el MAP sube** (mediana 1.36 V
+en las caídas contra 1.27 V el resto; correlación RPM-MAP −0.62) con la IAC quieta. Esa es la huella
+de una combustión que falla o se queda corta: el motor pierde un golpe, baja la RPM y entra menos
+vacío. Casa con "pop en el mofle + fallito en el motor". El MAP de ralentí (mediana 1.29 V) está
+arriba del **1.0 V** de la tabla de fábrica (3B-87) y el vacuómetro dio 17-17.8 inHg: vacío algo bajo
+de forma crónica. Que se quite con el compresor (más carga) apunta más a una combustión diluida o
+pobre (EGR que no cierra en ralentí, reparto del TBI) que a una chispa débil, que fallaría MÁS con
+carga; pero la dependencia del avance (0° sin pop) no encaja limpio con ninguna. Siguiente, gratis:
+revisar el **EGR** (motor apagado: que el diafragma suba libre y regrese a cerrar; en ralentí: la
+manguera del EGR NO debe tener vacío; y la prueba de levantarlo). Después, encendido (bujías, cables,
+tapa/rotor) y, si nada, compresión.
 **BLM de ralentí 116** en ese mismo log (aprendido a 48-53 °C con el A/C ciclando): abajo del 118 del
 spec y cerca del ~115 que el manual asocia al código 45 (rico). Un solo log y en frío: vigilarlo.
 
