@@ -118,5 +118,7 @@ diferencia de un par de décimas sobre 3.3 V es esperable; lo preocupante sería
 ## Pendiente de confirmar
 
 - El voltaje realmente medido en D2 con el motor en marcha.
-- Si el condensador, el cable trenzado y la tierra corta ya están instalados en el camión, y si
-  bajaron el ruido (por ejemplo, contando las filas del CSV con batería > 16 V, INT=0 o BLM=0).
+- **El condensador NO está instalado** (lo confirmó el usuario el 2026-09-28): todos los logs
+  hasta esa fecha son sin él. Falta saber si el cable trenzado y la tierra corta están puestos.
+  Al instalarlo, comparar el ruido antes y después (por ejemplo, contando las filas del CSV con
+  batería > 16 V, INT=0 o BLM=0).

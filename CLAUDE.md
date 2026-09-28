@@ -113,9 +113,10 @@ según el "Diagrama ALDL NodeMCU" del usuario (2026-09-19):
 - **Diagramas:** `docs/img/esquema-aldl.svg` y `docs/img/protoboard-aldl.svg`, extraídos
   del "Diagrama ALDL NodeMCU" del usuario (versión con condensador, 2026-09-19); el
   detalle y el montaje están en `docs/electronica.md`.
-- **Sin confirmar:** voltaje medido en D2 con el motor en marcha, y si el condensador, el
-  cable trenzado y la tierra corta que ya trae el diagrama están instalados en el camión.
-  No des por hecho ninguno de los dos.
+- **El condensador de 4.7 nF NO está instalado** (confirmado por el usuario el 2026-09-28):
+  todos los logs hasta esa fecha son sin él, y es candidato a explicar los frames corruptos.
+  **Sin confirmar:** voltaje medido en D2 con el motor en marcha, y si el cable trenzado y la
+  tierra corta están instalados. No los des por hechos.
 
 ## Resultado real (2026-09-19; actualizado 2026-09-28)
 
@@ -558,6 +559,15 @@ Lo que sigue abierto (no lo des por resuelto; se trata aparte del desarrollo):
 - La ECM manda **1 frame cada ~1.19 s** y el puente capta 1 de cada 2 a 4 según el log (2.38 s
   por fila en `T23-22-24` y en `T23-53-57`, ≈3.6 s en los anteriores): los CSV no resuelven fallas de encendido ni oscilaciones rápidas del O2. Compara
   distribuciones (percentiles), no cuentes cruces.
+  **Causa y arreglo (2026-09-28, SIN PROBAR EN EL CAMIÓN):** los mensajes van pegados (10 unos de
+  SYNC + 20 bytes = 190 celdas = 1.19 s) y el lector viejo, que leía la línea por sondeo en el mismo
+  hilo que imprime y atiende el WiFi, solo tenía 1 pulso de margen para cazar el SYNC siguiente.
+  El firmware ahora anota cada flanco por interrupción y decodifica aparte
+  (`firmware/esp8266_aldl_bridge/aldl_decoder.h`, misma regla de muestreo que antes). Probado en
+  la computadora con señal simulada y frames reales (`test/firmware/aldl_decoder_test.cpp`: 100 %
+  limpio, con reloj ±1.6 %, temblor y desborde de micros()) y compila; **falta flashearlo y ver un
+  log**. Cada 10 s imprime `Stats ALDL: ok=... prom_mal=... ruido=...` por Serial: con la ECM
+  hablando, `ok` debe subir ~8 cada 10 s. Si algo sale mal, volver al commit anterior del `.ino`.
 - **El BLM alterna entre dos valores frame a frame** (p. ej. 146/135 en `T23-53-57`) cuando el MAP
   se mueve: son **dos celdas de BLM vecinas**, no ruido ni un error de decodificación. Usa
   medianas sobre un tramo, nunca filas sueltas.

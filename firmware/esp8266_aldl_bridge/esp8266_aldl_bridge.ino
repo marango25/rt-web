@@ -14,11 +14,11 @@
  *    GM-OBD1 en GitHub para el esquema de 2 transistores). Conectar directo
  *    puede dañar el ESP8266 o la ECU.
  * 2. 160 baud es MUY lento comparado con lo que el ESP8266 maneja normalmente.
- *    Aquí se hace bit-banging manual (no Serial.begin(160), eso no existe),
- *    leyendo el pin con timing preciso.
+ *    No es UART (no existe Serial.begin(160)): una interrupción anota la hora
+ *    de cada flanco del pin y aldl_decoder.h decodifica el ancho de pulso.
  * 3. Esto es un PUNTO DE PARTIDA funcional para pruebas de banco, no un
  *    producto terminado. Espera ajustar los timings de sincronización
- *    (ALDL_BIT_US) una vez que lo pruebes contra tu ECU real.
+ *    (ALDL_DEC_* en aldl_decoder.h) una vez que lo pruebes contra tu ECU real.
  * 4. El firmware prueba 160 baud primero (protocolo confirmado de nuestro
  *    Sonoma 1993) y, si no sincroniza tras varios intentos, alterna a
  *    intentar 8192 baud (ver ALDL_8192_BIT_US) - pero ese segundo modo solo
@@ -39,18 +39,15 @@
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 #include <ESP8266mDNS.h>
+#include "aldl_decoder.h" // decodificador de 160 baud por flancos con hora (lo alimenta la interrupción de abajo)
 #include "secrets.h" // copia secrets.h.example a secrets.h y pon ahí el AP_SSID/AP_PASS de la red que va a transmitir el ESP8266 (no se sube al repo)
 
 // ---------- CONFIG ----------
 const char* MDNS_NAME = "rtweb"; // -> rtweb.local
 
 #define ALDL_PIN 4          // GPIO donde llega la señal ALDL (vía buffer/level-shifter)
-#define ALDL_BIT_US 6250    // 160 baud => ~6.25ms por celda de bit completa.
-#define ALDL_SAMPLE_US 2000 // instante de muestreo tras el flanco de bajada (ver readAldlBit).
-                             // Timing documentado (pulso corto ~368us = 0, largo ~4400us = 1)
-                             // varía entre ECMs - AJUSTAR con captura real (osciloscopio/
-                             // analizador lógico) si no sincroniza con tu ECU.
-#define ALDL_SYNC 0x1FF      // 9 bits en 1 consecutivos = byte de sincronización/resync de frame
+// El timing de 160 baud (celda ~6.25 ms, muestreo a 2000 us del flanco, SYNC de 9+ unos)
+// vive en aldl_decoder.h (ALDL_DEC_*). Pulso corto ~368 us = 0, largo ~4400 us = 1.
 #define ALDL_FRAME_BYTES 20  // ECM 1228062 / definición ALDL "A040" (GMC Sonoma 1993 2.8L TBI):
                              // A040.ads dice iNumBytesInPayload=20. El byte "1" de esa
                              // numeración (1-based) cae en frameBuf[0]. Ver defs/*.adx para el
@@ -61,7 +58,7 @@ const char* MDNS_NAME = "rtweb"; // -> rtweb.local
 
 #define ALDL_8192_BIT_US 122     // periodo de un bit a 8192 baud (~122.07us). A diferencia de 160
                                   // baud (que codifica cada bit como ancho de pulso dentro de una
-                                  // celda fija - ver readAldlBit160), el modo "high speed" de ALDL a
+                                  // celda fija - ver aldl_decoder.h), el modo "high speed" de ALDL a
                                   // 8192 baud es UART estándar de verdad: 1 bit de start (bajo), 8 de
                                   // datos (LSB primero), 1 de stop (alto) - como un puerto serial
                                   // normal pero a una tasa no estándar. Esto es documentación pública
@@ -84,10 +81,51 @@ AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
 
 uint8_t frameBuf[ALDL_8192_MAX_FRAME > ALDL_FRAME_BYTES ? ALDL_8192_MAX_FRAME : ALDL_FRAME_BYTES];
-volatile bool frameReady = false;
 
 AldlProtocol currentProtocol = PROTO_160; // arrancamos asumiendo 160 baud (protocolo confirmado del Sonoma)
 uint8_t protocolFailures = 0;
+
+// ---------- CAPTURA DE FLANCOS POR INTERRUPCIÓN (160 baud) ----------
+// La interrupción solo anota la hora y el nivel de cada flanco en un buffer
+// circular; loop() lo vacía hacia AldlDecoder. Así la hora de cada flanco es
+// exacta aunque el loop esté ocupado imprimiendo, armando JSON o atendiendo
+// el WiFi (ver el porqué en aldl_decoder.h). ~320 flancos/s: 512 dan ~1.6 s
+// de colchón antes de perder alguno.
+#define EDGE_BUF_SIZE 512 // potencia de 2
+volatile uint32_t edgeTimes[EDGE_BUF_SIZE];
+volatile uint8_t edgeLow[EDGE_BUF_SIZE];
+volatile uint16_t edgeHead = 0; // lo escribe la interrupción
+uint16_t edgeTail = 0;          // lo lee loop()
+volatile uint32_t edgeOverflows = 0;
+
+AldlDecoder aldl;
+unsigned long lastGoodFrameMs = 0;
+unsigned long lastStatsMs = 0;
+uint32_t statPromMismatch = 0;
+
+void IRAM_ATTR onAldlEdge() {
+  uint32_t t = micros();
+  uint8_t low = GPIP(ALDL_PIN) ? 0 : 1;
+  uint16_t next = (edgeHead + 1) & (EDGE_BUF_SIZE - 1);
+  if (next == edgeTail) {
+    edgeOverflows++; // loop() no alcanzó a vaciar: se pierde este flanco (sale en las estadísticas)
+    return;
+  }
+  edgeTimes[edgeHead] = t;
+  edgeLow[edgeHead] = low;
+  edgeHead = next;
+}
+
+void startEdgeCapture() {
+  edgeTail = edgeHead;
+  aldlDecoderReset(&aldl, ALDL_FRAME_BYTES);
+  lastGoodFrameMs = millis();
+  attachInterrupt(digitalPinToInterrupt(ALDL_PIN), onAldlEdge, CHANGE);
+}
+
+void stopEdgeCapture() {
+  detachInterrupt(digitalPinToInterrupt(ALDL_PIN));
+}
 
 // ---------- WIFI + WEBSOCKET ----------
 void onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* client,
@@ -146,130 +184,35 @@ void logFrameHex(const char* label, uint8_t* buf, size_t len) {
   Serial.println();
 }
 
-// ---------- LECTURA ALDL (bit-banging por ancho de pulso + sync) ----------
-// Basado en documentación pública del protocolo GM ALDL 160 baud (Tech Edge;
-// implementación de referencia "bot-thoughts" con Teensy 3.6). Cada bit es
-// un pulso bajo de ancho variable dentro de una celda de ALDL_BIT_US:
-//   - pulso corto (~368us)  => bit 0
-//   - pulso largo (~4400us) => bit 1
-// Se muestrea ALDL_SAMPLE_US después del flanco de bajada: si la línea
-// sigue baja en ese instante, es un 1; si ya volvió a alta, es un 0.
-// El byte de sincronización ALDL_SYNC (0x1FF, nueve 1-bits seguidos) es
-// la única secuencia de 9 bits en 1 que el ECM manda - marca el inicio de
-// frame y resincroniza el conteo de bits por byte en cualquier punto.
-// IMPORTANTE: el timing exacto (ALDL_SAMPLE_US, ALDL_BIT_US) varía entre
-// ECMs según la fuente original - si no sincroniza con tu Sonoma, captura
-// la señal real con osciloscopio/analizador lógico y ajusta estos valores.
+// ---------- LECTURA ALDL A 160 BAUD ----------
+// Codificación por ancho de pulso: cada bit es una celda de ~6.25 ms que abre
+// con un flanco de bajada; pulso bajo corto (~368 us) = 0, largo (~4400 us) = 1.
+// El SYNC son diez 1 seguidos (el 1228062 manda diez, no nueve). La decodificación
+// vive en aldl_decoder.h y se alimenta con los flancos que anota onAldlEdge().
+// El timing (ALDL_DEC_SAMPLE_US) es el mismo del lector anterior, ya probado en el Sonoma.
 
-// Lee un bit ALDL bloqueando hasta completar su celda. Devuelve -1 si no
-// hay flanco de bajada dentro de idleTimeoutUs (línea inactiva / fin de frame).
-int readAldlBit160(unsigned long idleTimeoutUs) {
-  unsigned long waitStart = micros();
-  while (digitalRead(ALDL_PIN) == HIGH) {
-    if ((unsigned long)(micros() - waitStart) > idleTimeoutUs) return -1;
-    yield(); // deja respirar al stack WiFi/TCP mientras esperamos (si no, WDT resetea el chip)
+// Vacía el buffer de flancos hacia el decodificador. Devuelve true si salió un frame completo.
+bool pumpAldl160() {
+  uint32_t now = micros();
+  // Solo flancos de antes de `now`: los posteriores esperan a la próxima vuelta,
+  // para que aldlTick(now) no muestree con un nivel "del futuro".
+  while (edgeTail != edgeHead) {
+    uint32_t t = edgeTimes[edgeTail];
+    if ((int32_t)(t - now) > 0) break;
+    aldlFeedEdge(&aldl, t, edgeLow[edgeTail] != 0);
+    edgeTail = (edgeTail + 1) & (EDGE_BUF_SIZE - 1);
+    if (aldl.frameReady) return true; // entregar antes de que el siguiente frame lo pise
   }
-
-  unsigned long edgeTime = micros();
-  // Muestrea 3 veces alrededor de ALDL_SAMPLE_US (en vez de una sola lectura)
-  // y toma la mayoría - más resistente a un pico de ruido justo en el
-  // instante de muestreo (motor encendido = bujías/bobina metiendo ruido).
-  delayMicroseconds(ALDL_SAMPLE_US - 200);
-  int lowCount = 0;
-  for (int i = 0; i < 3; i++) {
-    if (digitalRead(ALDL_PIN) == LOW) lowCount++;
-    delayMicroseconds(200);
-  }
-  int bit = (lowCount >= 2) ? 1 : 0;
-
-  // Completa el resto de la celda antes de buscar el siguiente flanco.
-  while ((unsigned long)(micros() - edgeTime) < ALDL_BIT_US) {
-    yield();
-  }
-  return bit;
+  aldlTick(&aldl, now);
+  return aldl.frameReady;
 }
 
-bool readAldlFrame160(uint8_t* out, size_t frameLen) {
-  // Fase 1: cazar el SYNC activamente antes de guardar nada. Sin esto, cada
-  // llamada empezaba a grabar desde donde cayera el primer flanco (no
-  // necesariamente el inicio real de un mensaje), causando un desfase que
-  // se acumulaba de a 1 byte por frame cuando los mensajes vienen seguidos
-  // (poco hueco de silencio entre ellos, como con el motor encendido).
-  // Fase 0: no empezar a cazar a media celda. readAldlBit160() da por hecho que
-  // la línea está en alto y que el próximo flanco de bajada abre una celda nueva;
-  // si entramos con la línea ya en bajo (a mitad de un pulso, que es lo normal
-  // justo después de terminar el frame anterior), mide un pulso parcial y el
-  // conteo de bits arranca desfasado. Esperar al alto cuesta como mucho una celda.
-  unsigned long alignStart = micros();
-  while (digitalRead(ALDL_PIN) == LOW) {
-    if ((unsigned long)(micros() - alignStart) > (unsigned long)ALDL_BIT_US * 2) break; // línea pegada en bajo
-    yield();
-  }
-
-  uint16_t shiftReg = 0;
-  unsigned long huntStart = millis();
-  while (true) {
-    if (millis() - huntStart > 3000) return false; // no se encontró sync a tiempo
-
-    int bit = readAldlBit160(2000000UL);
-    if (bit < 0) return false; // bus inactivo
-
-    shiftReg = ((shiftReg << 1) | bit) & ALDL_SYNC;
-    if (shiftReg == ALDL_SYNC) break;
-  }
-
-  // Fase 1b: agotar la racha de unos antes de grabar nada. ALDL_SYNC son NUEVE
-  // 1-bits, pero el 1228062 manda DIEZ (medido con captura de anchos de pulso en
-  // el Sonoma: diez L4400 seguidos antes de cada mensaje). Enganchar a los nueve
-  // dejaba el bit sobrante como primer bit del primer grupo y corría el mensaje
-  // entero un bit - los frames salían divididos por 2 (02 27 -> 01 13) y el
-  // chequeo de PROM ID los descartaba. Que a veces sí alineara era suerte: la
-  // caza empieza en un punto cualquiera del pulso, así que a veces contaba solo
-  // nueve de los diez unos (de ahí el 28% de frames capturados del log 04:06Z).
-  // Cada byte viaja como [bit de arranque en 0][8 bits de datos], así que ningún
-  // dato puede dar nueve unos seguidos (0xFF da ocho, cortados por el arranque
-  // del siguiente byte): el primer 0 tras la racha es el arranque del primer byte.
-  int firstBit;
-  do {
-    if (millis() - huntStart > 3000) return false;
-    firstBit = readAldlBit160((unsigned long)ALDL_BIT_US * 3);
-    if (firstBit < 0) return false;
-  } while (firstBit == 1);
-
-  // Fase 2: ya alineados justo después de un SYNC real - ahora sí se capturan
-  // los frameLen bytes del mensaje. Arranca con el bit de arranque ya leído.
-  int bitCount = 1;
-  size_t byteIdx = 0;
-  unsigned long frameStart = millis();
-  shiftReg = 0;
-
-  while (byteIdx < frameLen) {
-    if (millis() - frameStart > 3000) return false; // frame incompleto: se cortó a media lectura
-
-    int bit = readAldlBit160((unsigned long)ALDL_BIT_US * 3);
-    if (bit < 0) return false;
-
-    shiftReg = ((shiftReg << 1) | bit) & ALDL_SYNC;
-    bitCount++;
-
-    if (shiftReg == ALDL_SYNC) {
-      // Resync de emergencia si aparece otro sync a mitad de frame: agotar
-      // también aquí la racha de unos, por la misma razón que en la fase 1b.
-      do {
-        bit = readAldlBit160((unsigned long)ALDL_BIT_US * 3);
-        if (bit < 0) return false;
-      } while (bit == 1);
-      shiftReg = 0;
-      bitCount = 1;
-      continue;
-    }
-
-    if (bitCount == 9) {
-      out[byteIdx++] = shiftReg & 0xFF;
-      bitCount = 0;
-    }
-  }
-  return true;
+void printAldlStats() {
+  // Línea de diagnóstico: la web app solo parsea las líneas "Frame ALDL", así que esta no estorba.
+  // ok = frames entregados; con la ECM mandando uno cada ~1.19 s, en 10 s deberían ser ~8.
+  Serial.printf("Stats ALDL: ok=%u prom_mal=%u resync=%u inactivo=%u ruido=%u overflow=%u\n",
+                (unsigned)aldl.statFrames, (unsigned)statPromMismatch, (unsigned)aldl.statResyncs,
+                (unsigned)aldl.statIdleAborts, (unsigned)aldl.statGlitches, (unsigned)edgeOverflows);
 }
 
 // ---------- LECTURA ALDL A 8192 BAUD (UART estándar, protocolo alterno) ----
@@ -323,6 +266,7 @@ size_t readAldlFrame8192(uint8_t* out, size_t maxLen) {
 void setup() {
   Serial.begin(115200);
   pinMode(ALDL_PIN, INPUT);
+  startEdgeCapture(); // arrancamos en 160 baud
 
   setupWifi();
 
@@ -356,6 +300,9 @@ void handleProtocolFailure() {
   if (protocolFailures >= ALDL_PROTO_FAILURES_BEFORE_SWITCH) {
     currentProtocol = (currentProtocol == PROTO_160) ? PROTO_8192 : PROTO_160;
     protocolFailures = 0;
+    // 8192 baud se lee por sondeo (readAldl8192Byte); la interrupción de 160 solo corre en su modo.
+    if (currentProtocol == PROTO_160) startEdgeCapture();
+    else stopEdgeCapture();
     Serial.printf("Cambiando a modo %s...\n", currentProtocol == PROTO_160 ? "160 baud" : "8192 baud");
   }
 }
@@ -364,21 +311,31 @@ void loop() {
   ws.cleanupClients();
 
   if (currentProtocol == PROTO_160) {
-    if (readAldlFrame160(frameBuf, ALDL_FRAME_BYTES)) {
-      protocolFailures = 0;
+    if (pumpAldl160()) {
+      aldl.frameReady = false;
+      for (size_t i = 0; i < ALDL_FRAME_BYTES; i++) frameBuf[i] = aldl.frame[i];
       // El cazador de SYNC a veces engancha un falso positivo (ruido) y captura
       // bytes que no arrancan en el lugar correcto. El PROM ID es constante
       // en un frame bien alineado - si no calza, se descarta en vez de mandar
       // basura a la web app (esto es lo que causaba "80mph"/"13000rpm" con el
       // motor prendido: frames de otro alineamiento, no ruido bit a bit).
       if (frameBuf[1] != ALDL_PROM_ID_HI || frameBuf[2] != ALDL_PROM_ID_LO) {
+        statPromMismatch++;
         Serial.println("Frame descartado (PROM ID no calza - desincronizado)");
-        return;
+      } else {
+        protocolFailures = 0;
+        lastGoodFrameMs = millis();
+        logFrameHex("Frame ALDL (160 baud): ", frameBuf, ALDL_FRAME_BYTES);
+        broadcastFrame(frameBuf, ALDL_FRAME_BYTES, "160");
       }
-      logFrameHex("Frame ALDL (160 baud): ", frameBuf, ALDL_FRAME_BYTES);
-      broadcastFrame(frameBuf, ALDL_FRAME_BYTES, "160");
-    } else {
+    } else if (millis() - lastGoodFrameMs > 3000) {
+      // Igual que antes: ~3 s sin un frame válido cuenta como un intento fallido de este protocolo.
+      lastGoodFrameMs = millis();
       handleProtocolFailure();
+    }
+    if (millis() - lastStatsMs > 10000) {
+      lastStatsMs = millis();
+      printAldlStats();
     }
   } else {
     // A diferencia de 160 baud, aquí no validamos PROM ID (no conocemos el
