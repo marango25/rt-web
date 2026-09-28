@@ -20,6 +20,15 @@ function syntheticRawByte(byteIndex, tSec, acPhase) {
   const noise = (freq, phase = 0) => Math.sin(tSec * 2 * Math.PI * freq + phase);
 
   switch (byteIndex) {
+    case 1: // PROM ID 0x0227, constante como en la ECM real (src/frame-check.js marca cualquier otro)
+      return 0x02;
+    case 2:
+      return 0x27;
+    case 11: // códigos de falla: en la ECM real no parpadean frame a frame
+    case 13:
+      return 0;
+    case 12:
+      return 0x01; // código 42 guardado, como el Sonoma desde el 2026-09-23
     case 3: // IAC steps: ~13 en ralentí normal, sube a ~45 cuando el ciclo de "A/C" entra
       return 13 + acPhase * 32 + 2 * noise(0.4, 1);
     case 4: // temperatura refrigerante (tabla NTC) - motor ya caliente, casi plano
@@ -38,8 +47,8 @@ function syntheticRawByte(byteIndex, tSec, acPhase) {
       return 115 + 25 * noise(0.7, 0);
     case 15: // voltaje de batería: baja un poco bajo la carga eléctrica del A/C
       return 143 - acPhase * 4 + noise(0.1, 2);
-    case 17: // contador de detonación, casi siempre plano
-      return 10 + (noise(0.02, 0) > 0.9 ? 1 : 0);
+    case 17: // contador de detonación: solo sube (un contador real no baja y vuelve), un evento cada ~45 s
+      return (10 + Math.floor(tSec / 45)) % 256;
     case 18: // Block Learn (BLM), aprende lento - casi plano
       return 124 + 3 * noise(0.05, 1);
     case 19: // transiciones rico/pobre - contador rápido tipo diente de sierra

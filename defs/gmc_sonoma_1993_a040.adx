@@ -35,15 +35,26 @@
     que es inventado), y ya validado contra una captura larga con el motor
     encendido de verdad, no solo con la llave en ON.
   -->
+  <!--
+    FRAMES CORRUPTOS (2026-09-28): validmin/validmax = físicamente imposible,
+    spike = salto aislado (se aleja más que eso de los dos vecinos, que
+    coinciden entre sí), monotonic = contador que no baja y vuelve. Un frame
+    que rompe alguna se marca "sospechoso" (columna del CSV) y el replay lo
+    excluye; ver src/frame-check.js. Umbrales calibrados sobre 12,292 frames
+    del 2026-09-22 al 28: VSS salto real máx. 8 MPH (corruptos 211 y 254),
+    temperatura salto real máx. 2.5 °C, BLM real 118-172 (corruptos 0/2/16/240),
+    RPM real máx. 3450, batería en arranque ~8-10 V (0 V = frame de apagado de
+    llave, 1.6-2.8 V = bit perdido).
+  -->
   <PARAMETERGROUP name="Motor">
-    <PARAMETER id="rpm" name="RPM" units="rpm" byteindex="7" bytelength="1" equation="X*25" />
+    <PARAMETER id="rpm" name="RPM" units="rpm" byteindex="7" bytelength="1" equation="X*25" validmax="6000" />
     <!-- warnmax 105: tope del rango típico de fábrica (85-105 °C, 3B-8). Sin
          warnmin para no marcar en rojo cada calentamiento. -->
-    <PARAMETER id="coolant_c" name="Temperatura refrigerante" units="C" byteindex="4" bytelength="1" table="coolant_c" warnmax="105" />
+    <PARAMETER id="coolant_c" name="Temperatura refrigerante" units="C" byteindex="4" bytelength="1" table="coolant_c" warnmax="105" spike="5" />
     <PARAMETER id="tps_v" name="TPS (voltaje)" units="V" byteindex="8" bytelength="1" equation="X*0.0196" />
     <PARAMETER id="map_v" name="MAP (voltaje)" units="V" byteindex="6" bytelength="1" equation="X*0.0196" />
     <PARAMETER id="iac" name="Posicion IAC" units="Steps" byteindex="3" bytelength="1" equation="X" />
-    <PARAMETER id="speed" name="Velocidad del vehiculo" units="MPH" byteindex="5" bytelength="1" equation="X" />
+    <PARAMETER id="speed" name="Velocidad del vehiculo" units="MPH" byteindex="5" bytelength="1" equation="X" validmax="120" spike="15" />
   </PARAMETERGROUP>
 
   <PARAMETERGROUP name="Combustible / O2">
@@ -58,13 +69,13 @@
          normal, no una falla. El 3B-11 dice que la condición del código 44
          (pobre) deja el BLM "alrededor de 150". -->
     <PARAMETER id="int" name="Integrator (INT)" units="" byteindex="9" bytelength="1" equation="X" warnmin="110" warnmax="145" />
-    <PARAMETER id="blm" name="Block Learn (BLM)" units="" byteindex="18" bytelength="1" equation="X" warnmin="118" warnmax="138" />
+    <PARAMETER id="blm" name="Block Learn (BLM)" units="" byteindex="18" bytelength="1" equation="X" warnmin="118" warnmax="138" validmin="80" validmax="200" />
     <PARAMETER id="rl_trans" name="Transiciones Rico/Pobre" units="Transitions" byteindex="19" bytelength="1" equation="X" />
-    <PARAMETER id="knock" name="Contador de detonacion" units="" byteindex="17" bytelength="1" equation="X" />
+    <PARAMETER id="knock" name="Contador de detonacion" units="" byteindex="17" bytelength="1" equation="X" monotonic="true" />
   </PARAMETERGROUP>
 
   <PARAMETERGROUP name="Electrico">
-    <PARAMETER id="batt" name="Voltaje bateria" units="V" byteindex="15" bytelength="1" equation="X*0.1" />
+    <PARAMETER id="batt" name="Voltaje bateria" units="V" byteindex="15" bytelength="1" equation="X*0.1" validmin="6" validmax="17" />
   </PARAMETERGROUP>
 
   <!--
@@ -102,11 +113,11 @@
       En los 16 logs del Sonoma los tres valen 0x00 siempre (ningun codigo).
     -->
     <PARAMETER id="code_13" name="Codigo 13 (O2 abierto)" byteindex="11" bit="6"
-               truelabel="FALLA" falselabel="ok" alertif="true" />
+               truelabel="FALLA" falselabel="ok" alertif="true" spike="0.5" />
     <PARAMETER id="code_44" name="Codigo 44 (O2 pobre)" byteindex="13" bit="6"
-               truelabel="FALLA" falselabel="ok" alertif="true" />
+               truelabel="FALLA" falselabel="ok" alertif="true" spike="0.5" />
     <PARAMETER id="code_45" name="Codigo 45 (O2 rico)" byteindex="13" bit="5"
-               truelabel="FALLA" falselabel="ok" alertif="true" />
+               truelabel="FALLA" falselabel="ok" alertif="true" spike="0.5" />
   </PARAMETERGROUP>
 
   <PARAMETERGROUP name="Entradas y salidas">
@@ -138,7 +149,7 @@
       comprobacion de alineamiento, es lo mismo que valida el firmware con
       ALDL_PROM_ID_HI/LO antes de mandar cada frame.
     -->
-    <PARAMETER id="prom_id" name="PROM ID" byteindex="1" bytelength="2" equation="X" />
+    <PARAMETER id="prom_id" name="PROM ID" byteindex="1" bytelength="2" equation="X" validmin="551" validmax="551" />
   </PARAMETERGROUP>
 
   <LOOKUPTABLE id="coolant_c">

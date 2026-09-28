@@ -3,6 +3,7 @@ import { RTBridgeClient } from "./ws-client.js";
 import { SerialBridgeClient } from "./serial-client.js";
 import { SimSource } from "./sim-source.js";
 import { saveSession, listSessions, deleteSession } from "./db.js";
+import { checkFrames } from "./frame-check.js";
 
 let loadedTables = [];
 let loadedXdf = { constants: [], flags: [], checksum: null, header: {} }; // lo del .xdf que no son tablas (XDF de texto viejo)
@@ -85,13 +86,38 @@ function applyFrame(rawBytes, t, proto) {
   const outOfRangeLabels = []; // columna propia "fuera_de_rango" en el CSV
   const stuckLabels = []; // se suman a la columna "evento", junto a lo marcado manualmente
 
+  // p.read() saca el crudo del frame (1 o 2 bytes, con signo o no, o un solo
+  // bit si es bandera) y le aplica la ecuación/tabla. Un frame más corto de
+  // lo que pide el parámetro devuelve null: se salta, en vez de registrar un
+  // 0 que después parece un dato real.
+  const frameValues = {};
   loadedParams.forEach((p) => {
-    // p.read() saca el crudo del frame (1 o 2 bytes, con signo o no, o un solo
-    // bit si es bandera) y le aplica la ecuación/tabla. Un frame más corto de
-    // lo que pide el parámetro devuelve null: se salta, en vez de registrar un
-    // 0 que después parece un dato real.
     const value = p.read(rawBytes);
-    if (value === null) return;
+    if (value !== null) frameValues[p.id] = value;
+  });
+
+  // Un frame con algo físicamente imposible (VSS 211, batería 0 V del apagado de
+  // llave, BLM 240...) se guarda en el log marcado, pero no toca las tarjetas,
+  // gráficas ni alertas en vivo. Ver src/frame-check.js.
+  const impossible = loadedParams.length ? checkFrames(loadedParams, [frameValues])[0] : "";
+  if (impossible) {
+    sessionLog.push({
+      t: now,
+      values: { ...currentValues, ...frameValues },
+      raw: rawBytes.slice(),
+      evento: currentEventoText([]),
+      fueraDeRango: "",
+      sospechoso: impossible,
+    });
+    updateSuspectFlags();
+    updateLogCount();
+    maybeAutosaveSession();
+    return;
+  }
+
+  loadedParams.forEach((p) => {
+    const value = frameValues[p.id];
+    if (value === undefined) return;
     currentValues[p.id] = value;
 
     const hist = paramHistory[p.id] || (paramHistory[p.id] = []);
@@ -121,7 +147,9 @@ function applyFrame(rawBytes, t, proto) {
       raw: rawBytes.slice(),
       evento: currentEventoText(stuckLabels),
       fueraDeRango: outOfRangeLabels.join(", "),
+      sospechoso: "",
     });
+    updateSuspectFlags();
     updateLogCount();
   }
 
@@ -130,8 +158,25 @@ function applyFrame(rawBytes, t, proto) {
   if (viewMode === "live") refreshLiveFrame();
 }
 
+/**
+ * Las reglas de salto aislado necesitan el frame siguiente: al llegar cada
+ * frame se re-evalúa el anterior (ya con vecinos) y el nuevo (solo rangos).
+ */
+function updateSuspectFlags() {
+  const n = sessionLog.length;
+  if (!n || !loadedParams.length) return;
+  const from = Math.max(0, n - 3);
+  const res = checkFrames(
+    loadedParams,
+    sessionLog.slice(from).map((e) => e.values)
+  );
+  for (let i = Math.max(from, n - 2); i < n; i++) sessionLog[i].sospechoso = res[i - from];
+}
+
 function updateLogCount() {
-  if (el.logCount) el.logCount.textContent = `${sessionLog.length} muestras registradas`;
+  if (!el.logCount) return;
+  const bad = sessionLog.filter((e) => e.sospechoso).length;
+  el.logCount.textContent = `${sessionLog.length} muestras registradas${bad ? ` (${bad} sospechosas)` : ""}`;
 }
 
 function csvField(v) {
@@ -150,6 +195,7 @@ function downloadLog() {
     ...loadedParams.map((p) => csvField(`${p.name} (${p.units})`)),
     "evento",
     "fuera_de_rango",
+    "sospechoso",
     "raw_frame",
   ];
   const rows = sessionLog.map((entry) => {
@@ -164,8 +210,9 @@ function downloadLog() {
     });
     const evento = csvField(entry.evento || "");
     const fueraDeRango = csvField(entry.fueraDeRango || "");
+    const sospechoso = csvField(entry.sospechoso || "");
     const rawHex = csvField(entry.raw ? bytesToHex(entry.raw) : "");
-    return [iso, ...vals, evento, fueraDeRango, rawHex].join(",");
+    return [iso, ...vals, evento, fueraDeRango, sospechoso, rawHex].join(",");
   });
   const csv = [headers.join(","), ...rows].join("\n");
 
@@ -238,9 +285,9 @@ function sessionToReplayLog(session) {
     session.paramsSnapshot.forEach((p) => {
       if (r.values[p.id] !== undefined) values[p.name] = r.values[p.id];
     });
-    return { t: r.t, values };
+    return { t: r.t, values, sospechoso: r.sospechoso };
   });
-  return { name: `${session.vehicleTag} · ${new Date(session.startedAt).toLocaleString()}`, columns, rows };
+  return dropSuspectRows({ name: `${session.vehicleTag} · ${new Date(session.startedAt).toLocaleString()}`, columns, rows });
 }
 
 async function refreshSessionList() {
@@ -1184,8 +1231,13 @@ function parseCsvLog(text, filename) {
 
   const headerCells = splitCsvLine(lines[0]);
   const columns = [];
+  let suspectIdx = -1;
   headerCells.forEach((h, idx) => {
     if (idx === 0) return; // timestamp_iso
+    if (/^sospechoso$/i.test(h)) {
+      suspectIdx = idx;
+      return;
+    }
     if (/^evento$/i.test(h) || /^fuera_de_rango$/i.test(h) || /^raw_frame$/i.test(h)) return;
     const m = h.match(/^(.*)\s\((.*)\)$/);
     columns.push({ idx, key: m ? m[1] : h, units: m ? m[2] : "" });
@@ -1200,10 +1252,27 @@ function parseCsvLog(text, filename) {
       const raw = cells[c.idx];
       if (raw !== undefined && raw !== "") values[c.key] = parseFloat(raw);
     });
-    rows.push({ t, values });
+    rows.push({ t, values, sospechoso: suspectIdx >= 0 ? cells[suspectIdx] || "" : undefined });
   }
 
-  return { name: filename, columns, rows };
+  return dropSuspectRows({ name: filename, columns, rows });
+}
+
+/**
+ * Saca del replay los frames sospechosos. Si el log ya trae la marca (CSV
+ * nuevo o sesión guardada) se usa esa; si es un CSV viejo sin la columna, se
+ * calcula con las reglas del .adx cargado, emparejando por nombre de columna.
+ * Sin .adx cargado, un CSV viejo se deja tal cual.
+ */
+function dropSuspectRows(log) {
+  const hasMarks = log.rows.some((r) => r.sospechoso !== undefined);
+  const marks = hasMarks
+    ? log.rows.map((r) => r.sospechoso || "")
+    : loadedParams.length
+      ? checkFrames(loadedParams, log.rows.map((r) => r.values), (p) => p.name)
+      : log.rows.map(() => "");
+  const excluded = marks.filter(Boolean).length;
+  return { ...log, rows: log.rows.filter((_, i) => !marks[i]), excluded };
 }
 
 function drawOverlayChart(canvas, seriesA, seriesB, { hoverFrac = null } = {}) {
@@ -1445,8 +1514,8 @@ function renderReplay() {
   el.main.innerHTML = `
     <h3>Replay: ${a.name}${b ? ` vs ${b.name}` : ""}</h3>
     <div class="replay-legend">
-      <span><span class="dot" style="background:#5fb3a3;"></span>${a.name} (${a.rows.length} muestras)</span>
-      ${b ? `<span><span class="dot" style="background:#e0b84c;"></span>${b.name} (${b.rows.length} muestras)</span>` : ""}
+      <span><span class="dot" style="background:#5fb3a3;"></span>${a.name} (${a.rows.length} muestras${a.excluded ? `, ${a.excluded} sospechosas excluidas` : ""})</span>
+      ${b ? `<span><span class="dot" style="background:#e0b84c;"></span>${b.name} (${b.rows.length} muestras${b.excluded ? `, ${b.excluded} sospechosas excluidas` : ""})</span>` : ""}
       <span class="replay-zoom-controls">
         <button id="replay-zoom-reset" type="button" class="close-chart">Reset zoom</button>
         <span id="replay-zoom-hint" class="hint"></span>

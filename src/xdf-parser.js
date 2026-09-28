@@ -93,6 +93,10 @@ export class ParsedParameter {
     falseLabel,
     signed,
     alertIf,
+    validMin,
+    validMax,
+    spike,
+    monotonic,
   }) {
     this.id = id;
     this.name = name;
@@ -113,6 +117,14 @@ export class ParsedParameter {
     this.falseLabel = falseLabel || "No";
     this.alertIf = alertIf === true || alertIf === false ? alertIf : null; // estado que levanta la alerta
     this.signed = !!signed; // complemento a dos (ej. correcciones con signo)
+
+    // --- frames corruptos (ver src/frame-check.js) ---
+    // No son alertas del motor: marcan un FRAME como basura (ruido en la línea, bit perdido,
+    // frame de apagado de llave) para sacarlo del análisis.
+    this.validMin = validMin ?? null; // fuera de [validMin, validMax] = físicamente imposible
+    this.validMax = validMax ?? null;
+    this.spike = spike ?? null; // salto aislado: se aleja > spike de los dos vecinos, que coinciden entre sí
+    this.monotonic = !!monotonic; // contador que no puede bajar y volver a subir (ej. detonación)
   }
 
   /** true si este parámetro es una bandera booleana de 1 bit y no un valor numérico. */
@@ -237,6 +249,12 @@ export function evalEquation(equation, rawValue, vars = {}) {
 function textOf(el, selector, fallback = "") {
   const node = el.querySelector(selector);
   return node ? node.textContent.trim() : fallback;
+}
+
+/** Atributo numérico opcional: null si no está o no es número. */
+function numAttr(el, name) {
+  const v = parseFloat(attrOf(el, name, ""));
+  return Number.isNaN(v) ? null : v;
 }
 
 function attrOf(el, name, fallback = "") {
@@ -580,6 +598,10 @@ export function parseADX(xmlText) {
         table: tableId ? lookupTables.get(tableId) : null,
         warnMin: warnMinRaw !== "" ? parseFloat(warnMinRaw) : null,
         warnMax: warnMaxRaw !== "" ? parseFloat(warnMaxRaw) : null,
+        validMin: numAttr(p, "validmin"),
+        validMax: numAttr(p, "validmax"),
+        spike: numAttr(p, "spike"),
+        monotonic: attrOf(p, "monotonic", "false") === "true",
         flatAlert: attrOf(p, "flatalert", "false") === "true",
         bit: bitRaw !== "" ? parseInt(bitRaw, 10) : null,
         invert: attrOf(p, "invert", "false") === "true",

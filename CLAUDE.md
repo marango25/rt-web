@@ -192,6 +192,12 @@ decide con la etiqueta del chip y el `.bin` contra el de fábrica (proyecto PROM
 La detonación que queda sale casi toda en **5.ª ahorcado** (1650–1850 RPM, MAP 3.7–3.9 V,
 50–56 MPH): la regla es bajar a 4.ª. Al leer estos logs, ignora los frames corruptos del
 puente (BLM 0 o 240, VSS 211, saltos del contador de detonación en esos mismos frames).
+**Desde el 2026-09-28 la app los marca sola** (`src/frame-check.js` + atributos `validmin`/`validmax`/
+`spike`/`monotonic` del `.adx`): columna `sospechoso` en el CSV, no tocan las tarjetas en vivo y el
+replay los excluye (a un CSV viejo se le calculan si el `.adx` está cargado ANTES de abrirlo). Sobre
+12,475 frames del 22 al 28 marca 85 (0.68 %): 79 de apagado de llave (batería 0 V) y 6 de bit
+perdido, y ningún frame bueno. Huella del bit perdido: el valor sale ×2 (detonación 24→48→24).
+En tus propios scripts: filtra por `sospechoso` vacío.
 
 **Tiempo base con los 203: se probaron 0°, 5° y 10°.** La detonación sale igual a 0° que a 10°.
 El ralentí con el compresor enganchado da σRPM 20–23 (0°), 38–42 (5°) y 49 (10°), **pero no es
