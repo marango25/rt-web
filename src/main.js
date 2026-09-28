@@ -5,6 +5,7 @@ import { SimSource } from "./sim-source.js";
 import { saveSession, listSessions, deleteSession } from "./db.js";
 
 let loadedTables = [];
+let loadedXdf = { constants: [], flags: [], checksum: null, header: {} }; // lo del .xdf que no son tablas (XDF de texto viejo)
 let loadedParams = [];
 let currentValues = {}; // id -> valor calculado
 let paramHistory = {}; // id -> number[] (ventana reciente, para la gráfica)
@@ -396,7 +397,9 @@ el.fileInput.addEventListener("change", async (evt) => {
       // Aditivo a propósito: no borra loadedParams. Así puedes cargar un
       // .xdf (tablas) y un .adx (parámetros en vivo) juntos y ver el
       // resaltado de "posición actual" sobre la tabla (overlay en vivo).
-      loadedTables = parseXDF(text).tables;
+      const xdf = parseXDF(text);
+      loadedTables = xdf.tables;
+      loadedXdf = xdf;
       axisOverrides = {}; // los índices de tabla cambiaron, cualquier override viejo ya no aplica
       closeSurface3D(); // la vista 3D abierta (si había) apuntaba a un índice de tabla que ya no aplica
       renderMain();
@@ -523,6 +526,78 @@ function computeTablePosition(t, idx) {
   return { xParam, yParam, xVal, yVal, activeRow, activeCol, hint };
 }
 
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+}
+
+/** "OK" / "MAL" del checksum que declara el .xdf, para un bin dado. "" si no aplica. */
+function xdfChecksumText(bin) {
+  const cs = loadedXdf.checksum;
+  if (!cs || !bin) return "";
+  const r = cs.verify(bin);
+  if (!r.supported) return "método de checksum del .xdf no soportado";
+  if (r.ok === null) return "el bin es más chico que el rango del checksum";
+  return r.ok
+    ? `checksum OK (0x${hexPad(r.stored, 4)})`
+    : `checksum MAL: guardado 0x${hexPad(r.stored, 4)}, calculado 0x${hexPad(r.computed, 4)}`;
+}
+
+/**
+ * Constantes y banderas del .xdf (solo las trae el XDF de texto viejo, p. ej.
+ * el 4E.xdf del 1228062), agrupadas por el encabezado de grupo del archivo.
+ * Cada grupo va en un <details> cerrado para que 100+ filas no tapen las tablas.
+ */
+function buildXdfExtrasHtml() {
+  const h = loadedXdf.header || {};
+  const groups = new Map();
+  const add = (item, kind) => {
+    const g = item.group || "Sin grupo";
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push({ item, kind });
+  };
+  loadedXdf.constants.forEach((c) => add(c, "const"));
+  loadedXdf.flags.forEach((f) => add(f, "flag"));
+
+  const rowHtml = ({ item, kind }) => {
+    const addr = `0x${hexPad(item.address, 4)}${kind === "flag" ? ` bit ${item.bit}` : ""}`;
+    let val = `<span class="cell-empty">sin .bin</span>`;
+    if (loadedBin) {
+      if (kind === "flag") {
+        const v = item.value(loadedBin);
+        val = v === null ? "-" : v ? "Sí (1)" : "No (0)";
+      } else {
+        const v = item.value(loadedBin);
+        const raw = item.readRaw(loadedBin);
+        val = v === null ? "-" : `${Number.isInteger(v) ? v : v.toFixed(2)} ${esc(item.units)} <span style="color:var(--text-dim);">(crudo ${raw})</span>`;
+      }
+    }
+    return `<tr title="${esc(item.desc)}"><td style="text-align:left;">${esc(item.name)}${item.desc ? " ⓘ" : ""}</td><td>${addr}</td><td style="text-align:left;">${val}</td></tr>`;
+  };
+
+  const groupsHtml = [...groups.entries()]
+    .map(
+      ([g, items]) => `
+      <details class="xdf-group">
+        <summary>${esc(g)} <span style="color:var(--text-dim);">(${items.length})</span></summary>
+        <table class="data-table">
+          <thead><tr><th style="text-align:left;">Nombre</th><th>Dirección</th><th style="text-align:left;">Valor</th></tr></thead>
+          <tbody>${items.map(rowHtml).join("")}</tbody>
+        </table>
+      </details>`
+    )
+    .join("");
+
+  const csText = xdfChecksumText(loadedBin);
+  return `
+    <div class="table-block">
+      <h3>Constantes y banderas del .xdf ${h.title ? `<span style="color:var(--text-dim);font-size:12px;">(${esc(h.title)}${h.author ? ", " + esc(h.author) : ""})</span>` : ""}</h3>
+      ${csText ? `<div class="table-position-hint">${csText}</div>` : ""}
+      ${!loadedBin ? `<div class="hint">Carga el .bin para ver los valores.</div>` : ""}
+      ${groupsHtml}
+    </div>
+  `;
+}
+
 function buildTablesHtml() {
   return loadedTables
     .map((t, idx) => {
@@ -555,7 +630,7 @@ function buildTablesHtml() {
 
       return `
         <div class="table-block" data-table-idx="${idx}">
-          <h3>${t.name} <span style="color:var(--text-dim);font-size:12px;">(${t.units || "sin unidad"})</span></h3>
+          <h3>${t.group ? `<span style="color:var(--text-dim);font-size:12px;">${esc(t.group)} ·</span> ` : ""}${esc(t.name)} <span style="color:var(--text-dim);font-size:12px;">(${esc(t.units) || "sin unidad"})</span></h3>
           <div class="table-position-hint">${hint}</div>
           <div class="axis-match-controls">
             <label>Eje X (${t.xLabel}):
@@ -743,13 +818,14 @@ function wireLiveSection() {
  * Para refrescar solo los valores en vivo, usa refreshLiveFrame().
  */
 function renderMain() {
-  if (!loadedTables.length && !loadedParams.length) {
+  const hasXdfExtras = loadedXdf.constants.length || loadedXdf.flags.length;
+  if (!loadedTables.length && !loadedParams.length && !hasXdfExtras) {
     el.main.innerHTML = `<div class="empty-state">Carga una definición para empezar.</div>`;
     updateAlertBanner([]);
     return;
   }
 
-  const tablesHtml = loadedTables.length ? buildTablesHtml() : "";
+  const tablesHtml = (hasXdfExtras ? buildXdfExtrasHtml() : "") + (loadedTables.length ? buildTablesHtml() : "");
   const liveHtml = loadedParams.length ? buildLiveHtml() : "";
   el.main.innerHTML =
     (tablesHtml ? `<div id="tables-section">${tablesHtml}</div>` : "") +
@@ -1471,17 +1547,23 @@ function hexPad(n, width = 2) {
   return n.toString(16).toUpperCase().padStart(width, "0");
 }
 
-/** offset de celda -> {table, row, col}, para anotar en el diff en qué celda de una tabla .xdf cae. */
+/** offset -> texto (celda de tabla, constante o bandera del .xdf), para anotar en el diff dónde cae cada byte. */
 function buildTableOffsetIndex() {
   const map = new Map();
+  const put = (offset, label) => map.set(offset, map.has(offset) ? `${map.get(offset)}; ${label}` : label);
   loadedTables.forEach((t) => {
     for (let r = 0; r < t.rows; r++) {
       for (let c = 0; c < t.cols; c++) {
         const cell = t.cells[r * t.cols + c];
-        if (cell) map.set(cell.offset, { table: t, row: r, col: c });
+        if (cell) put(cell.offset, `${t.name} [fila ${r + 1}, col ${c + 1}]`);
       }
     }
   });
+  loadedXdf.constants.forEach((k) => {
+    put(k.address, k.name);
+    if (k.bits > 8) put(k.address + 1, `${k.name} (byte bajo)`);
+  });
+  loadedXdf.flags.forEach((f) => put(f.address, `${f.name} (bit ${f.bit})`));
   return map;
 }
 
@@ -1526,6 +1608,11 @@ function renderBinDiff() {
         ${b ? checksumRowHtml("B", binChecksums(b.bytes)) : ""}
       </tbody>
     </table>
+    ${
+      loadedXdf.checksum
+        ? `<div class="hint" style="margin-bottom:10px;">Checksum que declara el .xdf — A: ${xdfChecksumText(a.bytes)}${b ? ` · B: ${xdfChecksumText(b.bytes)}` : ""}</div>`
+        : ""
+    }
   `;
 
   if (!b) {
@@ -1546,8 +1633,7 @@ function renderBinDiff() {
     const shown = diffs.slice(0, 500);
     const rows = shown
       .map((d) => {
-        const loc = offsetIndex.get(d.offset);
-        const locText = loc ? `${loc.table.name} [fila ${loc.row + 1}, col ${loc.col + 1}]` : "";
+        const locText = esc(offsetIndex.get(d.offset) || "");
         return `<tr>
           <td>0x${hexPad(d.offset, 4)} (${d.offset})</td>
           <td>${d.a === null ? "—" : "0x" + hexPad(d.a)}</td>
@@ -1559,7 +1645,7 @@ function renderBinDiff() {
 
     html += `
       <table class="data-table">
-        <thead><tr><th>Offset</th><th>A</th><th>B</th><th style="text-align:left;">En tabla .xdf cargada</th></tr></thead>
+        <thead><tr><th>Offset</th><th>A</th><th>B</th><th style="text-align:left;">En el .xdf cargado</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
       ${diffs.length > shown.length ? `<div class="hint">Mostrando las primeras ${shown.length} diferencias de ${diffs.length}.</div>` : ""}

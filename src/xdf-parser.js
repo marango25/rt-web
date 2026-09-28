@@ -4,17 +4,18 @@
  * Parser mínimo pero real para archivos XDF (definiciones de tablas de bin)
  * y ADX (definiciones de datastream en vivo) de TunerPro.
  *
- * Ambos son XML. La estructura difiere ligeramente:
+ * Casi siempre son XML. La estructura difiere ligeramente:
  *  - XDF: <XDFFORMAT> con <TABLE>, <EMBEDDEDDATA offset=... />, <MATH equation=... />
+ *    (los XDF viejos de TunerPro son TEXTO, no XML: ver parseLegacyXDF)
  *  - ADX: <ADXFORMAT> con <PARAMETERGROUP>, <PARAMETER> con id/units/equation
  *
  * Un <PARAMETER> de ADX puede ser un valor numérico (1 o 2 bytes big-endian,
  * con signo opcional, por ecuación o tabla de lookup) o una bandera de 1 bit
  * con `bit="0..7"` (bit 0 = LSB, la convención del .ads de TunerPro/WinALDL).
  *
- * No cubrimos aún: banks/switches complejos, checksums embebidos en XDF,
- * ni todas las variantes de <MATH> (soportamos expresiones simples tipo
- * lineales "X*a+b" que es el 90% de los casos reales).
+ * No cubrimos aún: banks/switches complejos ni constantes/banderas/checksum
+ * del XDF XML (sí los del XDF de texto viejo). Las ecuaciones aceptan
+ * aritmética con + - * / y paréntesis (evalEquation).
  */
 
 export class ParsedTable {
@@ -38,7 +39,13 @@ export class ParsedTable {
     if (!cell) return null;
     const raw = readCellRaw(bin, cell.offset, cell.bits);
     if (raw == null) return null;
-    return evalEquation(this.equation, raw);
+    const vars = {};
+    for (const [letter, ref] of Object.entries(this.varRefs || {})) {
+      const v = ref.value(bin);
+      if (v == null) return null;
+      vars[letter] = v;
+    }
+    return evalEquation(this.equation, raw, vars);
   }
 }
 
@@ -173,30 +180,58 @@ export class ParsedParameter {
 }
 
 /**
- * Soporta expresiones lineales simples: X*a+b, X*a-b, X-a, X*a, X/a, X.
- * Se evita eval() real por seguridad; parseo manual de un patrón fijo.
- * Compartida entre ParsedParameter (bytes en vivo) y ParsedTable (celdas de bin).
+ * Evalúa una ecuación aritmética de TunerPro: números (también ".1"), X (el
+ * valor crudo), variables de una letra (`vars`, p. ej. la "y" que un XDF viejo
+ * enlaza a otra constante), + - * /, paréntesis y menos unario.
+ * Sin eval(): tokenizador + descenso recursivo. Compartida entre
+ * ParsedParameter (bytes en vivo), ParsedTable y ParsedConstant (bin).
  */
-function evalEquation(equation, rawValue) {
-  const expr = equation.trim().replace(/\s+/g, "");
+export function evalEquation(equation, rawValue, vars = {}) {
+  const expr = equation.trim();
   if (expr === "X") return rawValue;
 
-  const patterns = [
-    { re: /^X\*([\d.]+)\+([\d.]+)$/, fn: (m) => rawValue * parseFloat(m[1]) + parseFloat(m[2]) },
-    { re: /^X\*([\d.]+)-([\d.]+)$/, fn: (m) => rawValue * parseFloat(m[1]) - parseFloat(m[2]) },
-    { re: /^X\*([\d.]+)$/, fn: (m) => rawValue * parseFloat(m[1]) },
-    { re: /^X\/([\d.]+)$/, fn: (m) => rawValue / parseFloat(m[1]) },
-    { re: /^X\+([\d.]+)$/, fn: (m) => rawValue + parseFloat(m[1]) },
-    { re: /^X-([\d.]+)$/, fn: (m) => rawValue - parseFloat(m[1]) },
-  ];
+  const tokens = expr.match(/\d*\.\d+|\d+|[A-Za-z]|[-+*/()]|\S/g) || [];
+  let pos = 0;
+  const peek = () => tokens[pos];
+  const fail = () => {
+    throw new Error("sintaxis");
+  };
 
-  for (const p of patterns) {
-    const m = expr.match(p.re);
-    if (m) return p.fn(m);
+  // expr := term (('+'|'-') term)* ; term := factor (('*'|'/') factor)* ; factor := '-' factor | número | letra | '(' expr ')'
+  const parseExpr = () => {
+    let v = parseTerm();
+    while (peek() === "+" || peek() === "-") v = tokens[pos++] === "+" ? v + parseTerm() : v - parseTerm();
+    return v;
+  };
+  const parseTerm = () => {
+    let v = parseFactor();
+    while (peek() === "*" || peek() === "/") v = tokens[pos++] === "*" ? v * parseFactor() : v / parseFactor();
+    return v;
+  };
+  const parseFactor = () => {
+    const t = tokens[pos++];
+    if (t === undefined) fail();
+    if (t === "-") return -parseFactor();
+    if (t === "+") return parseFactor();
+    if (t === "(") {
+      const v = parseExpr();
+      if (tokens[pos++] !== ")") fail();
+      return v;
+    }
+    if (/^[\d.]/.test(t)) return parseFloat(t);
+    if (t === "X" || t === "x") return rawValue;
+    if (/^[A-Za-z]$/.test(t) && vars[t] !== undefined) return vars[t];
+    return fail();
+  };
+
+  try {
+    const v = parseExpr();
+    if (pos !== tokens.length) fail();
+    return v;
+  } catch {
+    console.warn(`Ecuación no soportada aún: "${equation}", devolviendo valor crudo`);
+    return rawValue;
   }
-
-  console.warn(`Ecuación no soportada aún: "${equation}", devolviendo valor crudo`);
-  return rawValue;
 }
 
 function textOf(el, selector, fallback = "") {
@@ -231,8 +266,240 @@ function parseAxisBreakpoints(tableNode, axisSelector, count) {
   return arr;
 }
 
-/** Parsea un XDF (definición de tablas de bin). Devuelve { tables: ParsedTable[] } */
+/** Valor escalar del bin (una celda suelta): 8 o 16 bits big-endian, con signo opcional. */
+export class ParsedConstant {
+  constructor({ name, group, address, bits, signed, equation, units, desc, varRefs }) {
+    this.name = name;
+    this.group = group || "";
+    this.address = address;
+    this.bits = bits || 8;
+    this.signed = !!signed;
+    this.equation = equation || "X";
+    this.units = units || "";
+    this.desc = desc || "";
+    this.varRefs = varRefs || {}; // letra de la ecuación -> ParsedConstant de la que sale su valor
+  }
+
+  readRaw(bin) {
+    const raw = bin ? readCellRaw(bin, this.address, this.bits) : null;
+    if (raw == null || !this.signed) return raw;
+    const top = 1 << (this.bits > 8 ? 16 : 8);
+    return raw >= top / 2 ? raw - top : raw;
+  }
+
+  /** Valor real, o null si no hay bin o la dirección cae fuera. */
+  value(bin, depth = 0) {
+    const raw = this.readRaw(bin);
+    if (raw == null) return null;
+    const vars = {};
+    for (const [letter, ref] of Object.entries(this.varRefs)) {
+      const v = depth < 4 ? ref.value(bin, depth + 1) : null; // tope por si un XDF trae referencias circulares
+      if (v == null) return null;
+      vars[letter] = v;
+    }
+    return evalEquation(this.equation, raw, vars);
+  }
+}
+
+/** Un bit de un byte del bin. bit 0 = LSB. */
+export class ParsedFlag {
+  constructor({ name, group, address, bit, desc }) {
+    this.name = name;
+    this.group = group || "";
+    this.address = address;
+    this.bit = bit;
+    this.desc = desc || "";
+  }
+
+  /** true/false, o null si no hay bin o la dirección cae fuera. */
+  value(bin) {
+    if (!bin || this.address < 0 || this.address >= bin.length) return null;
+    return ((bin[this.address] >> this.bit) & 1) === 1;
+  }
+}
+
+/**
+ * Checksum de suma de 16 bits (CalcMethod 0 de TunerPro, el de las PROM GM):
+ * suma de los bytes start..end (inclusive), módulo 65536, guardada
+ * big-endian en storeAddr.
+ */
+export class ParsedChecksum {
+  constructor({ start, end, storeAddr, method }) {
+    this.start = start;
+    this.end = end;
+    this.storeAddr = storeAddr;
+    this.method = method;
+  }
+
+  /** { supported, stored, computed, ok } — supported=false si el método no es la suma simple. */
+  verify(bin) {
+    if (this.method !== 0) return { supported: false };
+    if (!bin || this.end >= bin.length || this.storeAddr + 1 >= bin.length) return { supported: true, ok: null };
+    let sum = 0;
+    for (let i = this.start; i <= this.end; i++) sum = (sum + bin[i]) & 0xffff;
+    const stored = (bin[this.storeAddr] << 8) | bin[this.storeAddr + 1];
+    return { supported: true, stored, computed: sum, ok: stored === sum };
+  }
+}
+
+/**
+ * Parsea el formato de TEXTO viejo de TunerPro ("XDF\n1.110000", bloques
+ * %%HEADER%% / %%CHECKSUM%% / %%CONSTANT%% / %%FLAG%% / %%TABLE%% ... %%END%%,
+ * una línea "NNNNNN Campo =valor" por campo). Es el formato del 4E.xdf de
+ * Robert Saar (máscara $4E, ECM 1228062).
+ *
+ * Detalles que salen del propio archivo, no de documentación:
+ *  - Un título que empieza con espacios ("     Spark") es un encabezado de
+ *    grupo, no un dato: da nombre a lo que sigue y no se lista.
+ *  - Las ecuaciones traen "fórmula,TH|0|0|0|0|" y a veces ",OB|15D9|..."
+ *    para enlazar otra constante (por UniqueID) como variable. Se asume que
+ *    las letras de la fórmula (salvo X) toman los OB en orden de aparición;
+ *    en el 4E.xdf hay un solo caso ("X*0.3515625 -y" + OB 15D9 = "Coolant
+ *    Table Bias"), y encaja.
+ *  - Flags=0x1 en una constante = con signo (igual que mmedtypeflags del XDF XML).
+ *  - Tablas: celdas contiguas de 8 bits, por filas; PopByCol=1 = por columnas.
+ */
+export function parseLegacyXDF(text) {
+  const blocks = [];
+  let cur = null;
+  for (const line of text.split(/\r?\n/)) {
+    const marker = line.match(/^%%(\w+)%%\s*$/);
+    if (marker) {
+      if (marker[1] === "END") {
+        if (cur) blocks.push(cur);
+        cur = null;
+      } else {
+        cur = { kind: marker[1], f: {} };
+      }
+      continue;
+    }
+    if (!cur) continue;
+    const m = line.match(/^\s*\d{6}\s+(\w+)\s*=(.*)$/);
+    if (m) cur.f[m[1]] = m[2].trim();
+  }
+
+  const str = (v) => (v || "").replace(/^"|"$/g, "");
+  const num = (v, fallback = 0) => {
+    if (v === undefined || v === "") return fallback;
+    const n = /^0x/i.test(v) ? parseInt(v, 16) : parseFloat(v);
+    return Number.isNaN(n) ? fallback : n;
+  };
+  const splitEq = (v) => {
+    const parts = (v || "X").split(",");
+    const obIds = parts.filter((p) => /^OB\|/.test(p)).map((p) => p.split("|")[1].toUpperCase());
+    return { formula: parts[0].trim() || "X", obIds };
+  };
+  const labels = (v, count) => {
+    const vals = (v || "").split(",").map((s) => parseFloat(s));
+    return Array.from({ length: count }, (_, i) => (Number.isNaN(vals[i]) ? i : vals[i]));
+  };
+
+  const header = {};
+  let checksum = null;
+  const tables = [];
+  const constants = [];
+  const flags = [];
+  const byUid = new Map();
+  const pendingRefs = []; // [constante, fórmula, [uids]] para resolver cuando ya existan todas
+  let group = "";
+
+  for (const b of blocks) {
+    const f = b.f;
+    if (b.kind === "HEADER") {
+      Object.assign(header, {
+        title: str(f.DefTitle),
+        desc: str(f.Desc),
+        author: str(f.Author),
+        binSize: num(f.BinSize, null),
+      });
+      continue;
+    }
+    if (b.kind === "CHECKSUM") {
+      checksum = new ParsedChecksum({
+        start: num(f.DataStart),
+        end: num(f.DataEnd),
+        storeAddr: num(f.StoreAddr),
+        method: num(f.CalcMethod),
+      });
+      continue;
+    }
+
+    const rawTitle = str(f.Title);
+    if (/^\s/.test(rawTitle)) {
+      group = rawTitle.trim();
+      continue;
+    }
+    const name = rawTitle || "Sin nombre";
+    const desc = str(f.Desc);
+
+    if (b.kind === "CONSTANT") {
+      const { formula, obIds } = splitEq(f.Equation);
+      const c = new ParsedConstant({
+        name,
+        group,
+        address: num(f.Address),
+        bits: num(f.SizeInBits, 8),
+        signed: (num(f.Flags) & 1) === 1,
+        equation: formula,
+        units: str(f.Units),
+        desc,
+      });
+      constants.push(c);
+      byUid.set(String(f.UniqueID || "").toUpperCase().replace(/^0X/, ""), c);
+      if (obIds.length) pendingRefs.push([c, formula, obIds]);
+    } else if (b.kind === "FLAG") {
+      flags.push(new ParsedFlag({ name, group, address: num(f.Address), bit: num(f.BitNumber), desc }));
+    } else if (b.kind === "TABLE") {
+      const rows = num(f.Rows, 1) || 1;
+      const cols = num(f.Cols, 1) || 1;
+      const base = num(f.Address);
+      const bits = num(f.SizeInBits, 8);
+      const step = bits > 8 ? 2 : 1;
+      const byCol = num(f.PopByCol) === 1;
+      const cells = [];
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          cells.push({ offset: base + (byCol ? c * rows + r : r * cols + c) * step, bits });
+        }
+      }
+      const { formula, obIds } = splitEq(f.ZEq);
+      const t = new ParsedTable({
+        name,
+        rows,
+        cols,
+        cells,
+        units: str(f.ZUnits),
+        xLabel: str(f.XUnits) || "X",
+        yLabel: str(f.YUnits) || "Y",
+        xAxis: labels(f.XLabels, cols),
+        yAxis: labels(f.YLabels, rows),
+        equation: formula,
+      });
+      t.group = group;
+      t.desc = desc;
+      if (obIds.length) pendingRefs.push([t, formula, obIds]);
+      tables.push(t);
+    }
+  }
+
+  // Enlaza las letras de cada fórmula con las constantes OB|uid, en orden.
+  for (const [item, formula, obIds] of pendingRefs) {
+    const letters = [...new Set((formula.match(/[A-Za-z]/g) || []).filter((l) => l !== "X" && l !== "x"))];
+    const refs = {};
+    letters.forEach((l, i) => {
+      const ref = byUid.get(obIds[i]);
+      if (ref) refs[l] = ref;
+    });
+    item.varRefs = refs;
+  }
+
+  return { tables, constants, flags, checksum, header };
+}
+
+/** Parsea un XDF (definición de tablas de bin), XML o de texto viejo. Devuelve { tables, constants, flags, checksum, header }. */
 export function parseXDF(xmlText) {
+  if (isLegacyXDF(xmlText)) return parseLegacyXDF(xmlText);
+
   const doc = new DOMParser().parseFromString(xmlText, "application/xml");
   const errorNode = doc.querySelector("parsererror");
   if (errorNode) {
@@ -274,7 +541,7 @@ export function parseXDF(xmlText) {
     );
   });
 
-  return { tables };
+  return { tables, constants: [], flags: [], checksum: null, header: {} };
 }
 
 /** Parsea un ADX (definición de datastream en vivo). Devuelve { parameters: ParsedParameter[] } */
@@ -327,9 +594,14 @@ export function parseADX(xmlText) {
   return { parameters };
 }
 
-/** Detecta si un texto XML es XDF o ADX mirando el nodo raíz. */
+/** XDF de texto viejo de TunerPro: arranca con "XDF" y la versión en la línea siguiente. */
+function isLegacyXDF(text) {
+  return /^\uFEFF?XDF\s*\r?\n\s*\d+\.\d+/.test(text);
+}
+
+/** Detecta si un texto es XDF (XML o texto viejo) o ADX. */
 export function detectFormat(xmlText) {
-  if (/<XDFFORMAT/i.test(xmlText)) return "xdf";
+  if (/<XDFFORMAT/i.test(xmlText) || isLegacyXDF(xmlText)) return "xdf";
   if (/<ADXFORMAT/i.test(xmlText)) return "adx";
   return "unknown";
 }

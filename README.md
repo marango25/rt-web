@@ -9,7 +9,7 @@ rt-web/
 ├── src/                          # Web app (vanilla JS, sin build step)
 │   ├── index.html
 │   ├── style.css
-│   ├── xdf-parser.js             # Parser de XDF/ADX (formato XML de TunerPro)
+│   ├── xdf-parser.js             # Parser de XDF/ADX (XML de TunerPro y el XDF de texto viejo)
 │   ├── ws-client.js              # Cliente WebSocket hacia el ESP8266 (modo WiFi)
 │   ├── serial-client.js          # Lee los frames por USB con Web Serial (modo USB, sin WiFi)
 │   ├── sim-source.js             # "Modo simulado": datos falsos realistas sin hardware
@@ -110,8 +110,9 @@ incluso que el propio ESP8266 lo sirva.
       hardware real, 8192 solo detecta actividad UART válida, sin validar contra una ECU real
 - [x] Checksum / comparador de binarios
 - [x] Overlay del log en vivo sobre las tablas (resalta la celda donde opera el motor)
-- [ ] Calibración real con un `.xdf` verdadero del 1228062/A040 (necesita reverse-engineering
-      o encontrar uno ya hecho en la comunidad — ver `CLAUDE.md`)
+- [x] XDF real del 1228062: el `4E.xdf` de Robert Saar (máscara $4E, formato de texto viejo de
+      TunerPro) abre en la app con tablas, constantes, banderas y checksum
+- [ ] Calibración real: leer el `.bin` del chip del Sonoma y editarlo (ver `CLAUDE.md`)
 
 ## Primer caso real
 

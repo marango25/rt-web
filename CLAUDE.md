@@ -643,8 +643,11 @@ mezcla pobre; ver "Resultado real"). No hay nada urgente. Pendientes, sin prisa:
    tablas sin cambiar el ID es posible. EPROM **2732A** (24 pines, 4 KB, mapeada en $D000).
    XDF gratis: `~/Downloads/4E.xdf` (Robert Saar 2009, de
    https://www.tunerpro.net/download/bindefs/GM/4E.xdf) — **formato de texto viejo de TunerPro
-   ("XDF 1.110000"), no XML: `src/xdf-parser.js` no lo abre**; convertirlo con TunerPro RT o
-   escribirle parser. Checksum: suma 16 bits de 0x0004–0x0FFF guardada en 0x0000; PROM ID en
+   ("XDF 1.110000"), no XML**. **Desde el 2026-09-28 la web app lo abre** (`parseLegacyXDF` en
+   `src/xdf-parser.js`): tablas, constantes y banderas agrupadas, checksum OK/MAL al cargar el
+   `.bin`, y el comparador de binarios anota qué constante o celda cambió y valida el checksum de
+   A y B. Probado con el 4E.xdf real y un `.bin` sintético; **falta probarlo con el `.bin` real**
+   (y revisar que el bit de "Tranny Select" = manual salga en 1). Checksum: suma 16 bits de 0x0004–0x0FFF guardada en 0x0000; PROM ID en
    0x0002–3, máscara en 0x0004. Trae "Target Idle Speed A/C On/Off" (0x5CD/0x5CF, X×12.5 RPM),
    **pero no un parámetro de pasos de IAC al enganchar el A/C** (TunerCat, de pago, tampoco;
    lista pública en `~/Downloads/TunerCat_ecm_4E_parametros.pdf`). **Para la duda del chip

@@ -680,3 +680,16 @@ table.data-table th {
     height: 280px;
   }
 }
+
+/* Grupos de constantes/banderas del .xdf (XDF de texto viejo), plegables */
+.xdf-group {
+  margin: 6px 0;
+}
+.xdf-group summary {
+  cursor: pointer;
+  padding: 4px 0;
+  font-weight: 600;
+}
+.xdf-group .data-table {
+  margin: 6px 0 10px;
+}
