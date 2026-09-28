@@ -217,6 +217,34 @@ y se recupera. Solo se arregla en la **PROM** (RPM objetivo con A/C, apertura de
 enganchar). **No** con el tornillo de aire mínimo (la ECM lo compensa y sin A/C se dispara) ni
 engañando al sensor de temperatura (cambia combustible y avance en todo el rango).
 
+**Spec de ralentí de fábrica (confirmado el 2026-09-28 en el manual del usuario,
+`~/Downloads/1993_ST-336-93_..._FUEL_AND_EMISSIONS_MANUAL.pdf`, pág. 4-4 = página 635 del PDF,
+tabla "1993 CONTROLLED IDLE SPEED"):** 2.8L S-truck manual en neutral, motor caliente, sin A/C =
+**800 RPM, IAC 5–20 counts, OPEN LOOP** (+1 count por cada 1000 ft de altitud). El camión da
+~800 RPM con IAC 9–13 → **dentro de spec**. Y **el lazo abierto en ralentí es de fábrica**, no una
+falla: eso cierra la duda de los bullets de "Lazo en ralentí" y explica el O2 fijo en ~850 mV
+parado. El manual dice que el tornillo de mínimo "no se debe ajustar"; la tabla de MINIMUM IDLE
+SPEED solo trae el 7.4L. El "650–750 RPM" que da el resumen de IA de Google es falso para este motor.
+
+**Todo lo útil del manual ST-336-93 está resumido en `docs/manual-1993.md`** (2026-09-28): specs,
+tabla de datos típicos del escáner, pruebas pendientes paso a paso y pines del ECM. Lo que cambia
+cómo leer los logs o qué revisar:
+- **Rangos de fábrica (3B-8):** INT 110–145, BLM 118–138, refrigerante 85–105 °C. Ya están como
+  `warnmin`/`warnmax` en el `.adx` (antes eran 100–150 inventados). Son de ralentí: con carga el BLM
+  (112–115) sale en rojo y es normal. BLM ≈150 = condición del código 44.
+- **Auto-prueba de detonación (7-4):** con refrigerante >95 °C y carga cerca de WOT, la ECM
+  **adelanta la chispa a propósito** una vez por encendido para probar el sensor. Al contar
+  detonación, separa los frames de ≥95 °C. Además solo retarda arriba de 900 RPM, máx. 20°.
+- **EGR sin revisar, y el manual lo liga a la detonación:** "pasajes tapados → detonación severa al
+  acelerar". Prueba gratis: en ralentí caliente levantar el diafragma, el ralentí debe empeorar. El
+  código 32 nunca salió (se vigila arriba de 45 MPH), así que tapón total poco probable; parcial no.
+- **Thermac sin revisar:** compuerta de aire caliente del filtro; cerrada en caliente = aire caliente.
+- **Validar el contador de detonación:** golpear el bloque a 1500 RPM con la app en vivo; debe subir.
+- **AIR en ralentí:** en el S va a los puertos de escape en ralentí; la check valve del AIR está en
+  la lista de "backfire" del manual. En el próximo log, mirar los bits del AIR cuando suene el pop.
+- **A/C (3B-34):** la ECM suelta el embrague si el ralentí cae demasiado; mirar en el próximo log si
+  lo hace en las caídas a 550–700.
+
 Lo que sigue abierto (no lo des por resuelto; se trata aparte del desarrollo):
 
 - **RESUELTO el 2026-09-28 con los inyectores 203 (ver Caso 3); lo que sigue es historial.**
@@ -609,6 +637,8 @@ mezcla pobre; ver "Resultado real"). No hay nada urgente. Pendientes, sin prisa:
    subir el RPM objetivo con A/C → quemar otro EPROM, guardando el original).
    Es donde el editor XDF de este proyecto se vuelve útil de verdad.
 3. La prueba de la hoja en el escape para el pop de ralentí.
+3b. Pruebas gratis del manual (pasos en `docs/manual-1993.md` §3): EGR (levantar el diafragma),
+   Thermac, golpes al sensor de detonación con la app en vivo, PCV.
 4. Menores: borrar el código 42 (desconectar la batería; ya no hay BLM que
    proteger), filtro de aire nuevo, soldar y termocontráctil en los empalmes del
    diodo del compresor, contrastar el velocímetro contra GPS.

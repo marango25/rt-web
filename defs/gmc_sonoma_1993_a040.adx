@@ -37,7 +37,9 @@
   -->
   <PARAMETERGROUP name="Motor">
     <PARAMETER id="rpm" name="RPM" units="rpm" byteindex="7" bytelength="1" equation="X*25" />
-    <PARAMETER id="coolant_c" name="Temperatura refrigerante" units="C" byteindex="4" bytelength="1" table="coolant_c" />
+    <!-- warnmax 105: tope del rango típico de fábrica (85-105 °C, 3B-8). Sin
+         warnmin para no marcar en rojo cada calentamiento. -->
+    <PARAMETER id="coolant_c" name="Temperatura refrigerante" units="C" byteindex="4" bytelength="1" table="coolant_c" warnmax="105" />
     <PARAMETER id="tps_v" name="TPS (voltaje)" units="V" byteindex="8" bytelength="1" equation="X*0.0196" />
     <PARAMETER id="map_v" name="MAP (voltaje)" units="V" byteindex="6" bytelength="1" equation="X*0.0196" />
     <PARAMETER id="iac" name="Posicion IAC" units="Steps" byteindex="3" bytelength="1" equation="X" />
@@ -49,11 +51,14 @@
          encendido, la tarjeta se marca como "sin cambios" - es justo el síntoma
          que se está investigando (sensor "pegado"/enfriado). -->
     <PARAMETER id="o2" name="Sensor O2" units="mV" byteindex="10" bytelength="1" equation="X*4.44" flatalert="true" />
-    <!-- warnmin/warnmax: rango heurístico de "closed loop sano" (no es spec de
-         fábrica), solo para resaltar cuando el ECM está corrigiendo mucho más
-         de lo normal en cualquier dirección. Ajustar si da falsos positivos. -->
-    <PARAMETER id="int" name="Integrator (INT)" units="" byteindex="9" bytelength="1" equation="X" warnmin="100" warnmax="150" />
-    <PARAMETER id="blm" name="Block Learn (BLM)" units="" byteindex="18" bytelength="1" equation="X" warnmin="100" warnmax="150" />
+    <!-- warnmin/warnmax: spec de fábrica, "Typical Scan Data Values" del manual
+         ST-336-93, pág. 3B-8: short term (INT) 110-145, long term (BLM) 118-138.
+         OJO: el spec es para ralentí caliente en lazo cerrado. Con carga el BLM
+         baja a 112-115 con los inyectores 203 y la tarjeta se pone roja: eso es
+         normal, no una falla. El 3B-11 dice que la condición del código 44
+         (pobre) deja el BLM "alrededor de 150". -->
+    <PARAMETER id="int" name="Integrator (INT)" units="" byteindex="9" bytelength="1" equation="X" warnmin="110" warnmax="145" />
+    <PARAMETER id="blm" name="Block Learn (BLM)" units="" byteindex="18" bytelength="1" equation="X" warnmin="118" warnmax="138" />
     <PARAMETER id="rl_trans" name="Transiciones Rico/Pobre" units="Transitions" byteindex="19" bytelength="1" equation="X" />
     <PARAMETER id="knock" name="Contador de detonacion" units="" byteindex="17" bytelength="1" equation="X" />
   </PARAMETERGROUP>
