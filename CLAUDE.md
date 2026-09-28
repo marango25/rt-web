@@ -220,10 +220,18 @@ puertos de escape** (byte 16 bit 0: 0→1; en lazo cerrado va desviado al filtro
 postcombustión. El usuario notó que el pop **desaparece con el compresor enganchado y vuelve al
 soltarse** (A/C en la velocidad baja, ciclando cada ~6-7 s): suelto = 1000 RPM, MAP 1.14 V (más
 vacío); enganchado = 850 RPM, MAP 1.67 V. Los bits del AIR son iguales en los dos estados, así que
-el dato no explica esa parte. **Prueba que lo decide:** en ralentí caliente con pop, desconectar el
-conector del solenoide del AIR (pin C2 del ECM, "DTC ninguno" en la tabla 3B-87; sin corriente el
-aire se va al filtro). Si el pop se va, es el AIR: revisar la **válvula check del AIR** (está en la
-lista de "backfire" del manual, 2-19). Volver a conectar al terminar.
+el dato no explica esa parte.
+**CORRECCIÓN (el usuario, 2026-09-28): el solenoide del AIR YA ESTÁ DESCONECTADO, y también la
+manguera de vacío que va al múltiple.** O sea que el bit del byte 16 es solo lo que la ECM ORDENA, no
+lo que pasa: sin solenoide ni vacío, según el manual (8-2: solenoide energizado = aire al escape) el
+aire debería irse siempre al filtro. La hipótesis de la postcombustión pierde fuerza (no está muerta:
+no verifiqué cómo queda la válvula del 2.8 sin vacío). Lo que queda por revisar, en orden:
+(1) **¿el puerto del múltiple donde iba esa manguera está tapado?** Si está abierto es una fuga de
+vacío; encajaría con que el pop se vaya con el compresor (más carga, menos peso relativo de la fuga),
+aunque el log no muestra caídas pobres del O2 en ralentí caliente (730-890 mV) y el vacuómetro dio
+17-17.8 inHg. (2) **Tubos y válvulas check del AIR:** sin flujo de aire, una check que fuga o un tubo
+roto al múltiple deja salir escape = soplido/pop rítmico en ralentí; escuchar ahí. (3) ¿La banda de la
+bomba AIR está puesta?
 **BLM de ralentí 116** en ese mismo log (aprendido a 48-53 °C con el A/C ciclando): abajo del 118 del
 spec y cerca del ~115 que el manual asocia al código 45 (rico). Un solo log y en frío: vigilarlo.
 
