@@ -176,6 +176,18 @@ lazo cerrado + BLM habilitado + ≥80 °C + rodando.
 Lectura: 128 × 1.28 / 1.36 ≈ 120, o sea el motor pide lo mismo de siempre y el 203 se lo da.
 **Eso NO prueba que los GP dieran poco caudal:** no distingue "inyectores cortos" de "el motor
 pide ~25 % más por otra razón". El 203 es la contramedida, no la autopsia. Sin códigos 44/45.
+**La baja de detonación no es por la gasolina:** la premium entró a las 19:35 del 2026-09-27 (evento
+"ya con premium" en `T20-07-45`), así que ese log de los GP ya va casi entero con premium y es el
+que da **3.2** por frame (p. ej. contador 25→141 entre 19:49:34 y 19:50:55, en 5.ª a 50–56 MPH,
+MAP 3.4–3.8 V). `T18-10-01` (1.8) sería con la regular. Los logs de los 203 van con premium.
+El aditivo entró junto con la premium (confirmado por el usuario): todo lo marcado "premium" lleva
+aditivo, así que tampoco explica la diferencia GP→203.
+**¿Chip modificado? (2026-09-28, sin confirmar).** Si el problema fuera solo "los GP daban poco" con
+una PROM de fábrica para el 5235130, los 203 (~36 % más caudal) habrían dejado el BLM en ~94, no en
+119–123. Que quede en ~120 dice que **motor + PROM piden ~25 % más que un 2.8 de fábrica**: PROM
+calibrada para inyectores más grandes o más pobre (modificada o de otra aplicación), un motor con
+más VE, o que los caudales nominales (~33 / ~45 lb/h) estén mal. Depende de esos dos números. Se
+decide con la etiqueta del chip y el `.bin` contra el de fábrica (proyecto PROM), no con ALDL.
 La detonación que queda sale casi toda en **5.ª ahorcado** (1650–1850 RPM, MAP 3.7–3.9 V,
 50–56 MPH): la regla es bajar a 4.ª. Al leer estos logs, ignora los frames corruptos del
 puente (BLM 0 o 240, VSS 211, saltos del contador de detonación en esos mismos frames).
@@ -186,7 +198,13 @@ el tiempo:** sin A/C el MAP de ralentí es el mismo en los tres (1.24–1.25 V) 
 1.80 contra 2.05 V, es decir, lo que varió fue **cuánto jalaba el compresor** en cada tramo. Yo
 había dicho que el cabeceo con A/C era por los 10° y el log de 5° lo desmintió. **Quedó en 5°
 el 2026-09-28** (sin log manejando a 5°: la detonación ahí no está medida, aunque 0° y 10° dan
-igual). Recomendado volver a **10°** (spec) cuando se saque la lámpara, sin prisa.
+igual). **Regresado a 10° (spec) el 2026-09-28 ~15:00** (log `2026-09-28T15-10-27`, ya con
+gasolina premium, todo parado): tramo 14:54–14:58 = 5°; 15:00–15:03 = calibrando con el SET TIMING
+suelto (no comparable, IAC 15–17); 15:06 en adelante = 10° normal. Ralentí caliente sin A/C: IAC
+12–13 (5°) → 9–12 (10°), MAP 1.31 → 1.29 V, mismo RPM; ojo que el TPS cerrado pasó de 0.47 a
+0.51 V entre el tramo de calibración y el de 10° (algo movió la mariposa). La prueba con carga a
+10° ya existe: es `2026-09-28T01-30-21` (203 a 10°, **ya con premium y aditivo**), y es la misma
+configuración de hoy. No hace falta otro log manejando.
 
 **Pop leve y rítmico, solo en ralentí** (andando y acelerando, nada). Según el usuario: GP a 10°
 más fuerte, 203 a 10° y a 5° leve, **a 0° nunca**. Depende del avance, así que no es una válvula
@@ -584,8 +602,8 @@ El hardware ya está armado y leyendo el camión; las preguntas de bring-up
 problemas grandes del Sonoma están resueltos** (sensor O2, pulso falso del VSS y
 mezcla pobre; ver "Resultado real"). No hay nada urgente. Pendientes, sin prisa:
 
-1. Regresar el tiempo base a **10°** (hoy está en 5°) y capturar un log manejando
-   para confirmar la detonación con carga.
+1. Tiempo base ya en **10°** (2026-09-28). La detonación con carga a 10° ya está
+   medida (`2026-09-28T01-30-21`, misma configuración: 203 + premium + aditivo).
 2. Si el usuario quiere mejorar el ralentí con A/C: el **proyecto de la PROM**
    (foto de la etiqueta del chip → leer el `.bin` → XDF de esa calibración →
    subir el RPM objetivo con A/C → quemar otro EPROM, guardando el original).
