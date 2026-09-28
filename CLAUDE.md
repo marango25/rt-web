@@ -544,8 +544,8 @@ Lo que sigue abierto (no lo des por resuelto; se trata aparte del desarrollo):
   (O2 pobre)**; si aparece, no es una falla nueva, es la misma mezcla pobre cruzando el límite.
 - **Arranque en frío con el sensor nuevo: sin medir.** El 2026-09-23 el usuario salió en frío
   y reportó **cero cabeceo** (con A/C un buen rato, 25 °C nublado), pero no capturó log. Sigue
-  siendo la prueba que falta para el síntoma original. Captúrala con la web v1 de `main`, no
-  con la de v2. **El log `T23-22-24` NO es esa prueba:** arranca a 49 °C (motor tibio), no en frío.
+  siendo la prueba que falta para el síntoma original. Captúrala con la web de `main` (la v2 se
+  archivó el 2026-09-28). **El log `T23-22-24` NO es esa prueba:** arranca a 49 °C (motor tibio), no en frío.
 - **Ralentí / aire mínimo — OJO CON LA FECHA (corregido el 2026-09-23 con los datos).** Aquí
   decía que el aire mínimo se ajustó el 2026-09-16. **El ajuste que dejó el tornillo donde está
   hoy fue el del 2026-09-22, entre las 03:44 y las 15:16**, y eso importa porque en esa fecha el
@@ -676,6 +676,14 @@ mezcla pobre; ver "Resultado real"). No hay nada urgente. Pendientes, sin prisa:
 4. Menores: borrar el código 42 (desconectar la batería; ya no hay BLM que
    proteger), filtro de aire nuevo, soldar y termocontráctil en los empalmes del
    diodo del compresor, contrastar el velocímetro contra GPS.
+
+**Versión universal (antes "v2"), archivada el 2026-09-28.** El intento de perfil de protocolo
+como dato (el firmware recibe de la web baud/bytes/PROM ID sacados del `.adx`) quedó en la etiqueta
+`archivo/v2-perfil-protocolo`; el PR #1 se cerró y sus ramas se borraron. Se rehará en una rama
+nueva desde `main` **después** de probar en el camión el firmware por interrupción, rescatando la
+parte web (`src/firmware-link.js`, `src/protocol-profile.js`: `git show archivo/v2-perfil-protocolo:<ruta>`).
+El decodificador nuevo ya ayuda: el largo del frame es parámetro y la caza del SYNC sirve con 9 o 10
+unos; falta que el PROM ID y el largo lleguen por el perfil. Solo el Sonoma puede validarlo.
 
 **No reabras el enfriamiento** sin que él lo pida. No re-litigar las decisiones
 de la sección "Decisiones ya tomadas" salvo que el usuario explícitamente pida
