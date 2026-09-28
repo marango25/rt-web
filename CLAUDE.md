@@ -213,6 +213,20 @@ suelto (no comparable, IAC 15–17); 15:06 en adelante = 10° normal. Ralentí c
 10° ya existe: es `2026-09-28T01-30-21` (203 a 10°, **ya con premium y aditivo**), y es la misma
 configuración de hoy. No hace falta otro log manejando.
 
+**Pista fuerte para el pop (log `2026-09-28T22-06-00`, sin confirmar):** a los 75 °C la ECM pasa
+el ralentí a **lazo abierto** (spec de fábrica) y **en el mismo segundo manda el aire del AIR a los
+puertos de escape** (byte 16 bit 0: 0→1; en lazo cerrado va desviado al filtro, como dice el manual
+8-2). Desde ahí el ralentí va rico (O2 ~830-850 mV) con aire fresco entrando al múltiple: receta de
+postcombustión. El usuario notó que el pop **desaparece con el compresor enganchado y vuelve al
+soltarse** (A/C en la velocidad baja, ciclando cada ~6-7 s): suelto = 1000 RPM, MAP 1.14 V (más
+vacío); enganchado = 850 RPM, MAP 1.67 V. Los bits del AIR son iguales en los dos estados, así que
+el dato no explica esa parte. **Prueba que lo decide:** en ralentí caliente con pop, desconectar el
+conector del solenoide del AIR (pin C2 del ECM, "DTC ninguno" en la tabla 3B-87; sin corriente el
+aire se va al filtro). Si el pop se va, es el AIR: revisar la **válvula check del AIR** (está en la
+lista de "backfire" del manual, 2-19). Volver a conectar al terminar.
+**BLM de ralentí 116** en ese mismo log (aprendido a 48-53 °C con el A/C ciclando): abajo del 118 del
+spec y cerca del ~115 que el manual asocia al código 45 (rico). Un solo log y en frío: vigilarlo.
+
 **Pop leve y rítmico, solo en ralentí** (andando y acelerando, nada). Según el usuario: GP a 10°
 más fuerte, 203 a 10° y a 5° leve, **a 0° nunca**. Depende del avance, así que no es una válvula
 que no sella (eso saldría con cualquier tiempo); el mecanismo no está medido y el CSV (1 frame
@@ -565,8 +579,10 @@ Lo que sigue abierto (no lo des por resuelto; se trata aparte del desarrollo):
 - La ECM manda **1 frame cada ~1.19 s** y el puente capta 1 de cada 2 a 4 según el log (2.38 s
   por fila en `T23-22-24` y en `T23-53-57`, ≈3.6 s en los anteriores): los CSV no resuelven fallas de encendido ni oscilaciones rápidas del O2. Compara
   distribuciones (percentiles), no cuentes cruces.
-  **Causa y arreglo (2026-09-28, CONFIRMADO en el camión con llave en ON y motor apagado: 8 frames
-  cada 10 s = todos, 0 descartes, 0 ruido, ~318 flancos/s; falta con el motor andando):** los mensajes van pegados (10 unos de
+  **Causa y arreglo (2026-09-28, CONFIRMADO en el camión, también con el motor andando y SIN el
+  condensador: log `2026-09-28T22-06-00`, 398 filas de 400 posibles en 474 s, una cada 1.189 s; los 2
+  frames que faltan son uno en el arranque (batería 9.8 V) y uno al apagar; 0 frames corruptos en 380
+  con el motor andando. Los logs viejos tenían 1 fila cada 2.4-3.6 s):** los mensajes van pegados (10 unos de
   SYNC + 20 bytes = 190 celdas = 1.19 s) y el lector viejo, que leía la línea por sondeo en el mismo
   hilo que imprime y atiende el WiFi, solo tenía 1 pulso de margen para cazar el SYNC siguiente.
   El firmware ahora anota cada flanco por interrupción y decodifica aparte
