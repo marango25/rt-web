@@ -97,6 +97,7 @@ volatile uint8_t edgeLow[EDGE_BUF_SIZE];
 volatile uint16_t edgeHead = 0; // lo escribe la interrupción
 uint16_t edgeTail = 0;          // lo lee loop()
 volatile uint32_t edgeOverflows = 0;
+volatile uint32_t edgeCount = 0; // flancos vistos por la interrupción (0 = la línea está quieta: llave en OFF o sin conexión)
 
 AldlDecoder aldl;
 unsigned long lastGoodFrameMs = 0;
@@ -106,6 +107,7 @@ uint32_t statPromMismatch = 0;
 void IRAM_ATTR onAldlEdge() {
   uint32_t t = micros();
   uint8_t low = GPIP(ALDL_PIN) ? 0 : 1;
+  edgeCount++;
   uint16_t next = (edgeHead + 1) & (EDGE_BUF_SIZE - 1);
   if (next == edgeTail) {
     edgeOverflows++; // loop() no alcanzó a vaciar: se pierde este flanco (sale en las estadísticas)
@@ -210,9 +212,11 @@ bool pumpAldl160() {
 void printAldlStats() {
   // Línea de diagnóstico: la web app solo parsea las líneas "Frame ALDL", así que esta no estorba.
   // ok = frames entregados; con la ECM mandando uno cada ~1.19 s, en 10 s deberían ser ~8.
-  Serial.printf("Stats ALDL: ok=%u prom_mal=%u resync=%u inactivo=%u ruido=%u overflow=%u\n",
+  // flancos: ~320/s con la ECM hablando; 0 = no llega señal al pin. nivel = cómo está la línea ahora (en reposo, alta).
+  Serial.printf("Stats ALDL: ok=%u prom_mal=%u resync=%u inactivo=%u ruido=%u overflow=%u flancos=%u nivel=%s\n",
                 (unsigned)aldl.statFrames, (unsigned)statPromMismatch, (unsigned)aldl.statResyncs,
-                (unsigned)aldl.statIdleAborts, (unsigned)aldl.statGlitches, (unsigned)edgeOverflows);
+                (unsigned)aldl.statIdleAborts, (unsigned)aldl.statGlitches, (unsigned)edgeOverflows,
+                (unsigned)edgeCount, digitalRead(ALDL_PIN) ? "alto" : "bajo");
 }
 
 // ---------- LECTURA ALDL A 8192 BAUD (UART estándar, protocolo alterno) ----

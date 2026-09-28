@@ -565,15 +565,17 @@ Lo que sigue abierto (no lo des por resuelto; se trata aparte del desarrollo):
 - La ECM manda **1 frame cada ~1.19 s** y el puente capta 1 de cada 2 a 4 según el log (2.38 s
   por fila en `T23-22-24` y en `T23-53-57`, ≈3.6 s en los anteriores): los CSV no resuelven fallas de encendido ni oscilaciones rápidas del O2. Compara
   distribuciones (percentiles), no cuentes cruces.
-  **Causa y arreglo (2026-09-28, SIN PROBAR EN EL CAMIÓN):** los mensajes van pegados (10 unos de
+  **Causa y arreglo (2026-09-28, CONFIRMADO en el camión con llave en ON y motor apagado: 8 frames
+  cada 10 s = todos, 0 descartes, 0 ruido, ~318 flancos/s; falta con el motor andando):** los mensajes van pegados (10 unos de
   SYNC + 20 bytes = 190 celdas = 1.19 s) y el lector viejo, que leía la línea por sondeo en el mismo
   hilo que imprime y atiende el WiFi, solo tenía 1 pulso de margen para cazar el SYNC siguiente.
   El firmware ahora anota cada flanco por interrupción y decodifica aparte
   (`firmware/esp8266_aldl_bridge/aldl_decoder.h`, misma regla de muestreo que antes). Probado en
   la computadora con señal simulada y frames reales (`test/firmware/aldl_decoder_test.cpp`: 100 %
   limpio, con reloj ±1.6 %, temblor y desborde de micros()) y compila; **falta flashearlo y ver un
-  log**. Cada 10 s imprime `Stats ALDL: ok=... prom_mal=... ruido=...` por Serial: con la ECM
-  hablando, `ok` debe subir ~8 cada 10 s. Si algo sale mal, volver al commit anterior del `.ino`.
+  log**. Cada 10 s imprime `Stats ALDL: ok=... prom_mal=... ruido=... flancos=... nivel=...` por
+  Serial: con la ECM hablando, `ok` sube ~8 y `flancos` ~3,200 cada 10 s. `flancos=0 nivel=bajo`
+  = no llega señal (llave en OFF o cable suelto), no es el firmware. Si algo sale mal, volver al commit anterior del `.ino`.
 - **El BLM alterna entre dos valores frame a frame** (p. ej. 146/135 en `T23-53-57`) cuando el MAP
   se mueve: son **dos celdas de BLM vecinas**, no ruido ni un error de decodificación. Usa
   medianas sobre un tramo, nunca filas sueltas.
