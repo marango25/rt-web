@@ -259,7 +259,18 @@ ver la aguja.
 del lado del copiloto (1-3-5 según él) tiene la porcelana blanca y limpia.** Ojo con la numeración: yo
 creía que en este V6 GM los impares van del lado del conductor; el usuario dice lo contrario y él
 sacó las bujías. Lo que manda es el LADO FÍSICO (conductor = aceite); confirmar números en el múltiple
-o la tapa del distribuidor si hace falta. Una bancada entera quemando aceite. Explica el fallo intermitente de
+o la tapa del distribuidor si hace falta.
+**Contexto que cambia la lectura (el usuario, 2026-09-28):** cambió las bujías hace ~mes y medio y en
+ESE cambio las del lado del conductor salieron limpias como hoy las del copiloto, y las del copiloto
+"canelitas" (tan, normal). O sea, **el ensuciamiento es nuevo y empezó después de ese cambio**. En su
+video de los agujeros se ve una rosca interior negra y brillante y, POR FUERA junto a dos agujeros,
+manchas negras secas sobre la cabeza; y en las fotos el negro cubre toda la rosca hasta el asiento.
+Hipótesis alternativa igual o más fuerte que "aceite en la cámara": **gases de combustión escapando
+entre bujía y cabeza** (bujía floja, asiento sucio o rosca torcida; ese lado es difícil de alcanzar y
+si son de asiento cónico dependen del apriete). Cómo separarlas: limpiar asientos, reinstalar con
+torque de la caja/manual, agua jabonosa en la base en ralentí (burbujas = fuga), y revisar una bujía
+en unos días: rosca limpia y sin fallito = era el sello; punta mojada de aceite otra vez = aceite en
+la cámara → compresión. Pendiente: cómo las apretó y si son con arandela o asiento cónico. Una bancada entera quemando aceite. Explica el fallo intermitente de
 ralentí (bujía aceitada que pierde chispa en frío/ralentí y se limpia con carga → por eso se quita con
 el compresor), el pop en el mofle y que todos los cilindros reaccionaran en la prueba de cables; y el
 aceite en cámara baja el octanaje efectivo (posible aporte a la detonación, sin probar). Sospechosos
