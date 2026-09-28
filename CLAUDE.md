@@ -636,6 +636,21 @@ mezcla pobre; ver "Resultado real"). No hay nada urgente. Pendientes, sin prisa:
    (foto de la etiqueta del chip → leer el `.bin` → XDF de esa calibración →
    subir el RPM objetivo con A/C → quemar otro EPROM, guardando el original).
    Es donde el editor XDF de este proyecto se vuelve útil de verdad.
+   **Ya investigado (2026-09-28):** máscara **$4E** (tunerpro.net, TunerCat y la lista C3 de
+   Ludis coinciden). El PROM ID que manda el camión, **551 (0x0227)**, es el "Scan ID" del chip
+   de fábrica **AZNU** (S10/S15 2.8 manual 91–93, PROM ID 0435; el dato viene de un anuncio de
+   eBay y un post de gearhead-efi), así que el chip *probablemente* es de fábrica, aunque editar
+   tablas sin cambiar el ID es posible. EPROM **2732A** (24 pines, 4 KB, mapeada en $D000).
+   XDF gratis: `~/Downloads/4E.xdf` (Robert Saar 2009, de
+   https://www.tunerpro.net/download/bindefs/GM/4E.xdf) — **formato de texto viejo de TunerPro
+   ("XDF 1.110000"), no XML: `src/xdf-parser.js` no lo abre**; convertirlo con TunerPro RT o
+   escribirle parser. Checksum: suma 16 bits de 0x0004–0x0FFF guardada en 0x0000; PROM ID en
+   0x0002–3, máscara en 0x0004. Trae "Target Idle Speed A/C On/Off" (0x5CD/0x5CF, X×12.5 RPM),
+   **pero no un parámetro de pasos de IAC al enganchar el A/C** (TunerCat, de pago, tampoco;
+   lista pública en `~/Downloads/TunerCat_ecm_4E_parametros.pdf`). **Para la duda del chip
+   modificado:** "BPW Constant for EGR Off" en **0x2AE** vale **166 en un 2.8 de fábrica** (181 en
+   el 4.3) según el autor del XDF — es lo primero que hay que leer en el `.bin`. No hay `.bin` de
+   stock descargable. `~/Downloads/4E.ads` es la v1.3 del mismo flujo que `A040.ads`.
 3. La prueba de la hoja en el escape para el pop de ralentí.
 3b. Pruebas gratis del manual (pasos en `docs/manual-1993.md` §3): EGR (levantar el diafragma),
    Thermac, golpes al sensor de detonación con la app en vivo, PCV.
