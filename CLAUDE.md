@@ -228,8 +228,7 @@ aire debería irse siempre al filtro. La hipótesis de la postcombustión pierde
 no verifiqué cómo queda la válvula del 2.8 sin vacío). Lo que queda por revisar, en orden:
 (1) **¿el puerto del múltiple donde iba esa manguera está tapado?** Si está abierto es una fuga de
 vacío; encajaría con que el pop se vaya con el compresor (más carga, menos peso relativo de la fuga),
-aunque el log no muestra caídas pobres del O2 en ralentí caliente (730-890 mV) y el vacuómetro dio
-17-17.8 inHg. (2) **Tubos y válvulas check del AIR:** sin flujo de aire, una check que fuga o un tubo
+aunque el log no muestra caídas pobres del O2 en ralentí caliente (730-890 mV). (2) **Tubos y válvulas check del AIR:** sin flujo de aire, una check que fuga o un tubo
 roto al múltiple deja salir escape = soplido/pop rítmico en ralentí; escuchar ahí. (3) ¿La banda de la
 bomba AIR está puesta?
 **Resuelto el mismo día: el AIR NO es.** Puerto de vacío tapado; bomba con banda, girando y soplando
@@ -240,14 +239,22 @@ min):** 22 caídas a ≤750 RPM (hasta 675) en 5.9 min, **y en cada caída el MA
 en las caídas contra 1.27 V el resto; correlación RPM-MAP −0.62) con la IAC quieta. Esa es la huella
 de una combustión que falla o se queda corta: el motor pierde un golpe, baja la RPM y entra menos
 vacío. Casa con "pop en el mofle + fallito en el motor". El MAP de ralentí (mediana 1.29 V) está
-arriba del **1.0 V** de la tabla de fábrica (3B-87) y el vacuómetro dio 17-17.8 inHg: vacío algo bajo
-de forma crónica. Que se quite con el compresor (más carga) apunta más a una combustión diluida o
+arriba del **1.0 V** de la tabla de fábrica (3B-87): vacío algo bajo de forma crónica.
+**OJO: el usuario NO tiene vacuómetro.** Los "17.0-17.8 inHg" que aparecen en este archivo salieron
+del MAP de los logs convertido, NO de un instrumento; no los cites como una medición aparte. Que se quite con el compresor (más carga) apunta más a una combustión diluida o
 pobre que a una chispa débil, que fallaría MÁS con carga; pero la dependencia del avance (0° sin pop)
 no encaja limpio con nada. **El EGR NO puede ser: está CANCELADO (bloqueado) desde la admisión**
-(dato del usuario, 2026-09-28; no estaba anotado y llegué a proponerlo). Siguiente, gratis: el
-**vacuómetro en ralentí mirando la AGUJA, no la cifra** (caída regular y rítmica = válvula que no
-sella, típico del "puff" rítmico en el escape; caídas irregulares = encendido), luego encendido
-(bujías, cables, tapa/rotor) y **prueba de compresión** (seca y húmeda).
+(dato del usuario, 2026-09-28; no estaba anotado y llegué a proponerlo).
+**Prueba de balance hecha por el usuario (log `2026-09-28T23-03-59`): quitó los cables de bujía uno
+por uno y el motor reaccionó con TODOS, ninguno se quedó atrás.** No hay un cilindro muerto ni uno
+claramente débil (un cilindro con compresión baja o válvula que no sella aportaría poco y apenas se
+notaría al quitarle el cable), así que la válvula quemada pierde fuerza. Lo que queda es un fallo
+INTERMITENTE. Siguiente, gratis: (1) **mirar el rociado de los dos inyectores del TBI en ralentí**
+con la tapa del filtro quitada (cono fino y parejo; chorro, goteo o uno distinto al otro = mal reparto,
+y encaja con que mejore con carga); (2) sacar y **leer las bujías** (una distinta a las demás dice qué
+cilindro) y revisar tapa y rotor (carbón, grietas, humedad); (3) opcional, un vacuómetro barato para
+ver la aguja. Aviso de seguridad dado: quitar cables con el motor andando puede dañar la bobina HEI
+(secundario abierto) y da toques; si se repite, hacerlo breve o aterrizar el cable.
 **BLM de ralentí 116** en ese mismo log (aprendido a 48-53 °C con el A/C ciclando): abajo del 118 del
 spec y cerca del ~115 que el manual asocia al código 45 (rico). Un solo log y en frío: vigilarlo.
 

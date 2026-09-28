@@ -49,8 +49,8 @@ un motor sano" que hay para este ECM.
 - **BLM ≈ 150 = la condición del código 44** (pobre); **≈ 115 = la del código 45** (rico)
   (3B-11). Con los GP estaba en 152–158: rozando el 44. Con los 203, 119–123.
 - El MAP de ralentí del camión (1.16–1.31 V) está algo arriba del 1.0 V del auto de
-  referencia, o sea un poco menos de vacío. La altitud lo mueve y el vacuómetro dio
-  17–17.8 inHg estables: **no es un hallazgo**, es un dato para tener a mano.
+  referencia, o sea un poco menos de vacío. La altitud lo mueve. (No hay vacuómetro: los
+  "17–17.8 inHg" de las notas salieron del mismo MAP convertido, no de un instrumento.)
 
 ---
 
