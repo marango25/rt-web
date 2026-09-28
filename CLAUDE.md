@@ -253,7 +253,19 @@ INTERMITENTE. Siguiente, gratis: (1) **mirar el rociado de los dos inyectores de
 con la tapa del filtro quitada (cono fino y parejo; chorro, goteo o uno distinto al otro = mal reparto,
 y encaja con que mejore con carga); (2) sacar y **leer las bujías** (una distinta a las demás dice qué
 cilindro) y revisar tapa y rotor (carbón, grietas, humedad); (3) opcional, un vacuómetro barato para
-ver la aguja. Aviso de seguridad dado: quitar cables con el motor andando puede dañar la bobina HEI
+ver la aguja.
+**HALLAZGO (2026-09-28, fotos de las bujías): la bancada PAR (2-4-6, lado pasajero) tiene las bujías
+negras y MOJADAS DE ACEITE (rosca y cuerpo brillantes, costra en la punta); la impar (1-3-5) tiene la
+porcelana blanca y limpia.** Una bancada entera quemando aceite. Explica el fallo intermitente de
+ralentí (bujía aceitada que pierde chispa en frío/ralentí y se limpia con carga → por eso se quita con
+el compresor), el pop en el mofle y que todos los cilindros reaccionaran en la prueba de cables; y el
+aceite en cámara baja el octanaje efectivo (posible aporte a la detonación, sin probar). Sospechosos
+del aceite en UNA bancada: sellos de válvula de esa cabeza, empaque de admisión de ese lado (chupa del
+valle de botadores, típico del V6 60°), anillos. Plan dado: limpiar/cambiar las 6 bujías y revisar la
+separación (la del cil. 2 se ve con el electrodo deformado; spec de bujía y gap NO está en el ST-336,
+está en el ST-369 o la etiqueta); si las pares se re-ensucian, compresión seca y húmeda; preguntar
+consumo de aceite y humo azul al arrancar. Pendiente saber si las 1-3-5 son más nuevas que las 2-4-6.
+Aviso de seguridad dado: quitar cables con el motor andando puede dañar la bobina HEI
 (secundario abierto) y da toques; si se repite, hacerlo breve o aterrizar el cable.
 **BLM de ralentí 116** en ese mismo log (aprendido a 48-53 °C con el A/C ciclando): abajo del 118 del
 spec y cerca del ~115 que el manual asocia al código 45 (rico). Un solo log y en frío: vigilarlo.
