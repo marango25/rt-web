@@ -66,7 +66,7 @@ Lista de "Detonation/Spark Knock" (2-10, 2-11), con lo ya hecho marcado:
 | Tiempo base | ✅ 10° |
 | Sensor de temperatura corrido | ✅ lectura sana en todos los logs |
 | Enfriamiento | ✅ se topa en 94–96 °C, dentro de 85–105 |
-| **Válvula EGR y pasajes** | ⬜ **sin revisar** — ver 3.1 |
+| **Válvula EGR y pasajes** | ⚠️ **EGR cancelado (bloqueado) desde la admisión** (dato del usuario, 2026-09-28): sin EGR no hay recirculación y el manual dice que "poco o ningún EGR" da detonación con carga — posible aporte a la detonación en 5.ª |
 | **Thermac (aire caliente)** | ⬜ **sin revisar** — ver 3.2 |
 | **Sistema del sensor de detonación** | ⬜ sin revisar — ver 3.3 |
 | Bujías (rango térmico y separación) | ⬜ datos en el ST-369, no aquí |
@@ -91,6 +91,9 @@ Lista de "Detonation/Spark Knock" (2-10, 2-11), con lo ya hecho marcado:
 ## 3. Pruebas gratis pendientes, paso a paso
 
 ### 3.1 EGR (9B-4/9B-5, PDF 811–812)
+
+> **En el Sonoma el EGR está cancelado (bloqueado) desde la admisión** (2026-09-28). Las pruebas de
+> abajo no aplican mientras siga así; quedan por si algún día se vuelve a habilitar.
 
 El 2.8L S lleva **EGR de puerto** con solenoide **EVRV** (pin A4, cable gris). El manual:
 *"si los pasajes están tapados, el motor puede tener detonación severa al acelerar"*, y

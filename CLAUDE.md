@@ -242,11 +242,12 @@ de una combustión que falla o se queda corta: el motor pierde un golpe, baja la
 vacío. Casa con "pop en el mofle + fallito en el motor". El MAP de ralentí (mediana 1.29 V) está
 arriba del **1.0 V** de la tabla de fábrica (3B-87) y el vacuómetro dio 17-17.8 inHg: vacío algo bajo
 de forma crónica. Que se quite con el compresor (más carga) apunta más a una combustión diluida o
-pobre (EGR que no cierra en ralentí, reparto del TBI) que a una chispa débil, que fallaría MÁS con
-carga; pero la dependencia del avance (0° sin pop) no encaja limpio con ninguna. Siguiente, gratis:
-revisar el **EGR** (motor apagado: que el diafragma suba libre y regrese a cerrar; en ralentí: la
-manguera del EGR NO debe tener vacío; y la prueba de levantarlo). Después, encendido (bujías, cables,
-tapa/rotor) y, si nada, compresión.
+pobre que a una chispa débil, que fallaría MÁS con carga; pero la dependencia del avance (0° sin pop)
+no encaja limpio con nada. **El EGR NO puede ser: está CANCELADO (bloqueado) desde la admisión**
+(dato del usuario, 2026-09-28; no estaba anotado y llegué a proponerlo). Siguiente, gratis: el
+**vacuómetro en ralentí mirando la AGUJA, no la cifra** (caída regular y rítmica = válvula que no
+sella, típico del "puff" rítmico en el escape; caídas irregulares = encendido), luego encendido
+(bujías, cables, tapa/rotor) y **prueba de compresión** (seca y húmeda).
 **BLM de ralentí 116** en ese mismo log (aprendido a 48-53 °C con el A/C ciclando): abajo del 118 del
 spec y cerca del ~115 que el manual asocia al código 45 (rico). Un solo log y en frío: vigilarlo.
 
