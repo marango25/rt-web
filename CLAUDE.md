@@ -254,9 +254,12 @@ con la tapa del filtro quitada (cono fino y parejo; chorro, goteo o uno distinto
 y encaja con que mejore con carga); (2) sacar y **leer las bujías** (una distinta a las demás dice qué
 cilindro) y revisar tapa y rotor (carbón, grietas, humedad); (3) opcional, un vacuómetro barato para
 ver la aguja.
-**HALLAZGO (2026-09-28, fotos de las bujías): la bancada PAR (2-4-6, lado pasajero) tiene las bujías
-negras y MOJADAS DE ACEITE (rosca y cuerpo brillantes, costra en la punta); la impar (1-3-5) tiene la
-porcelana blanca y limpia.** Una bancada entera quemando aceite. Explica el fallo intermitente de
+**HALLAZGO (2026-09-28, fotos de las bujías): la bancada del LADO DEL CONDUCTOR (el usuario la numera
+2-4-6) tiene las bujías negras y MOJADAS DE ACEITE (rosca y cuerpo brillantes, costra en la punta); la
+del lado del copiloto (1-3-5 según él) tiene la porcelana blanca y limpia.** Ojo con la numeración: yo
+creía que en este V6 GM los impares van del lado del conductor; el usuario dice lo contrario y él
+sacó las bujías. Lo que manda es el LADO FÍSICO (conductor = aceite); confirmar números en el múltiple
+o la tapa del distribuidor si hace falta. Una bancada entera quemando aceite. Explica el fallo intermitente de
 ralentí (bujía aceitada que pierde chispa en frío/ralentí y se limpia con carga → por eso se quita con
 el compresor), el pop en el mofle y que todos los cilindros reaccionaran en la prueba de cables; y el
 aceite en cámara baja el octanaje efectivo (posible aporte a la detonación, sin probar). Sospechosos
