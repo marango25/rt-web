@@ -606,7 +606,8 @@ function buildXdfExtrasHtml() {
   loadedXdf.flags.forEach((f) => add(f, "flag"));
 
   const rowHtml = ({ item, kind }) => {
-    const addr = `0x${hexPad(item.address, 4)}${kind === "flag" ? ` bit ${item.bit}` : ""}`;
+    const flagBits = kind !== "flag" ? "" : item.bit != null ? ` bit ${item.bit}` : ` máscara 0x${hexPad(item.mask)}`;
+    const addr = `0x${hexPad(item.address, 4)}${flagBits}`;
     let val = `<span class="cell-empty">sin .bin</span>`;
     if (loadedBin) {
       if (kind === "flag") {
@@ -639,6 +640,7 @@ function buildXdfExtrasHtml() {
     <div class="table-block">
       <h3>Constantes y banderas del .xdf ${h.title ? `<span style="color:var(--text-dim);font-size:12px;">(${esc(h.title)}${h.author ? ", " + esc(h.author) : ""})</span>` : ""}</h3>
       ${csText ? `<div class="table-position-hint">${csText}</div>` : ""}
+      ${h.warning ? `<div class="hint">Ojo: ${esc(h.warning)}</div>` : ""}
       ${!loadedBin ? `<div class="hint">Carga el .bin para ver los valores.</div>` : ""}
       ${groupsHtml}
     </div>
@@ -657,11 +659,13 @@ function buildTablesHtml() {
           .map((p) => `<option value="${p.id}"${p.id === selectedId ? " selected" : ""}>${p.name}</option>`)
           .join("");
 
-      const headerRow = `<tr><th></th>${t.xAxis.map((v) => `<th>${v}</th>`).join("")}</tr>`;
+      const xText = t.xAxisText || t.xAxis; // el XDF XML puede traer etiquetas de texto ("1 -> 2")
+      const yText = t.yAxisText || t.yAxis;
+      const headerRow = `<tr><th></th>${xText.map((v) => `<th>${esc(v)}</th>`).join("")}</tr>`;
 
       let bodyRows = "";
       for (let r = 0; r < t.rows; r++) {
-        bodyRows += `<tr><th>${t.yAxis[r]}</th>`;
+        bodyRows += `<tr><th>${esc(yText[r])}</th>`;
         for (let c = 0; c < t.cols; c++) {
           const val = t.valueAt(r, c, loadedBin);
           const cell = t.cells[r * t.cols + c];
@@ -1632,7 +1636,7 @@ function buildTableOffsetIndex() {
     put(k.address, k.name);
     if (k.bits > 8) put(k.address + 1, `${k.name} (byte bajo)`);
   });
-  loadedXdf.flags.forEach((f) => put(f.address, `${f.name} (bit ${f.bit})`));
+  loadedXdf.flags.forEach((f) => put(f.address, `${f.name} (${f.bit != null ? `bit ${f.bit}` : `máscara 0x${hexPad(f.mask)}`})`));
   return map;
 }
 

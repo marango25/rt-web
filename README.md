@@ -9,7 +9,8 @@ rt-web/
 ├── src/                          # Web app (vanilla JS, sin build step)
 │   ├── index.html
 │   ├── style.css
-│   ├── xdf-parser.js             # Parser de XDF/ADX (XML de TunerPro y el XDF de texto viejo)
+│   ├── xdf-parser.js             # Parser de XDF/ADX (XML de TunerPro 5 y el XDF de texto viejo)
+│   ├── frame-check.js            # Marca frames ALDL corruptos (reglas validmin/spike/monotonic del .adx)
 │   ├── ws-client.js              # Cliente WebSocket hacia el ESP8266 (modo WiFi)
 │   ├── serial-client.js          # Lee los frames por USB con Web Serial (modo USB, sin WiFi)
 │   ├── sim-source.js             # "Modo simulado": datos falsos realistas sin hardware

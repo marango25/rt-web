@@ -13,9 +13,11 @@
  * con signo opcional, por ecuación o tabla de lookup) o una bandera de 1 bit
  * con `bit="0..7"` (bit 0 = LSB, la convención del .ads de TunerPro/WinALDL).
  *
- * No cubrimos aún: banks/switches complejos ni constantes/banderas/checksum
- * del XDF XML (sí los del XDF de texto viejo). Las ecuaciones aceptan
- * aritmética con + - * / y paréntesis (evalEquation).
+ * Tres dialectos de XDF: el XML real de TunerPro 5 (parseModernXDF), el de
+ * texto viejo de TunerPro (parseLegacyXDF) y el de una EMBEDDEDDATA por celda
+ * de defs/example.xdf. Los dos primeros dan tablas, constantes, banderas y
+ * checksum. No cubrimos aún: ejes leídos del bin ni banks/switches. Las
+ * ecuaciones aceptan aritmética con + - * / y paréntesis (evalEquation).
  */
 
 export class ParsedTable {
@@ -37,7 +39,7 @@ export class ParsedTable {
     if (!bin) return null;
     const cell = this.cells[row * this.cols + col];
     if (!cell) return null;
-    const raw = readCellRaw(bin, cell.offset, cell.bits);
+    const raw = readCellRaw(bin, cell.offset, cell.bits, cell);
     if (raw == null) return null;
     const vars = {};
     for (const [letter, ref] of Object.entries(this.varRefs || {})) {
@@ -50,13 +52,13 @@ export class ParsedTable {
 }
 
 /** Lee el valor crudo de una celda desde un binario de calibración. Soporta 8 y 16 bits (big-endian, común en ECUs GM). */
-function readCellRaw(bin, offset, bits) {
-  if (offset == null || offset < 0 || offset >= bin.length) return null;
-  if (bits > 8) {
-    if (offset + 1 >= bin.length) return null;
-    return (bin[offset] << 8) | bin[offset + 1];
-  }
-  return bin[offset];
+function readCellRaw(bin, offset, bits, { signed = false, lsbFirst = false } = {}) {
+  const n = bits > 16 ? 4 : bits > 8 ? 2 : 1;
+  if (offset == null || offset < 0 || offset + n > bin.length) return null;
+  let raw = 0;
+  for (let i = 0; i < n; i++) raw = raw * 256 + bin[lsbFirst ? offset + n - 1 - i : offset + i]; // big-endian salvo lsbFirst
+  if (signed && raw >= 2 ** (8 * n - 1)) raw -= 2 ** (8 * n);
+  return raw;
 }
 
 /** Interpola linealmente en una tabla [[raw, valor], ...] ordenada por raw ascendente. */
@@ -286,12 +288,13 @@ function parseAxisBreakpoints(tableNode, axisSelector, count) {
 
 /** Valor escalar del bin (una celda suelta): 8 o 16 bits big-endian, con signo opcional. */
 export class ParsedConstant {
-  constructor({ name, group, address, bits, signed, equation, units, desc, varRefs }) {
+  constructor({ name, group, address, bits, signed, lsbFirst, equation, units, desc, varRefs }) {
     this.name = name;
     this.group = group || "";
     this.address = address;
     this.bits = bits || 8;
     this.signed = !!signed;
+    this.lsbFirst = !!lsbFirst;
     this.equation = equation || "X";
     this.units = units || "";
     this.desc = desc || "";
@@ -299,10 +302,7 @@ export class ParsedConstant {
   }
 
   readRaw(bin) {
-    const raw = bin ? readCellRaw(bin, this.address, this.bits) : null;
-    if (raw == null || !this.signed) return raw;
-    const top = 1 << (this.bits > 8 ? 16 : 8);
-    return raw >= top / 2 ? raw - top : raw;
+    return bin ? readCellRaw(bin, this.address, this.bits, this) : null;
   }
 
   /** Valor real, o null si no hay bin o la dirección cae fuera. */
@@ -319,20 +319,27 @@ export class ParsedConstant {
   }
 }
 
-/** Un bit de un byte del bin. bit 0 = LSB. */
+/**
+ * Bandera del bin: el XDF viejo da un bit (0 = LSB) de un byte; el XML da una
+ * máscara (puede abarcar varios bits, y el dato puede ser de 16 bits).
+ * Vale true si algún bit de la máscara está en 1.
+ */
 export class ParsedFlag {
-  constructor({ name, group, address, bit, desc }) {
+  constructor({ name, group, address, bit, mask, bits, desc }) {
     this.name = name;
     this.group = group || "";
     this.address = address;
-    this.bit = bit;
+    this.bits = bits || 8;
+    this.mask = mask ?? (Number.isInteger(bit) ? 1 << bit : 1);
+    // bit solo para mostrarlo, cuando la máscara es de un solo bit
+    this.bit = Number.isInteger(bit) ? bit : (this.mask & (this.mask - 1)) === 0 ? Math.log2(this.mask) : null;
     this.desc = desc || "";
   }
 
   /** true/false, o null si no hay bin o la dirección cae fuera. */
   value(bin) {
-    if (!bin || this.address < 0 || this.address >= bin.length) return null;
-    return ((bin[this.address] >> this.bit) & 1) === 1;
+    const raw = bin ? readCellRaw(bin, this.address, this.bits) : null;
+    return raw == null ? null : (raw & this.mask) !== 0;
   }
 }
 
@@ -514,6 +521,230 @@ export function parseLegacyXDF(text) {
   return { tables, constants, flags, checksum, header };
 }
 
+/** Número de un atributo/texto de XDF: "0x1F", "31", "-32". NaN si no hay. */
+function xdfNum(v) {
+  if (v === null || v === undefined) return NaN;
+  const t = String(v).trim();
+  if (/^-?0x[0-9a-f]+$/i.test(t)) return t.startsWith("-") ? -parseInt(t.slice(1), 16) : parseInt(t, 16);
+  return parseFloat(t);
+}
+
+/**
+ * XDF XML de TunerPro 5 (<XDFFORMAT> con XDFTABLE/XDFCONSTANT/XDFFLAG/XDFCHECKSUM).
+ * Probado con los XDF de tunerpro.net $31, $0D, $2E y $5B (2010-2011). Lo que
+ * sale de esos archivos y no de documentación:
+ *  - Cada dato va en un <EMBEDDEDDATA mmedaddress mmedelementsizebits
+ *    mmedrowcount mmedcolcount mmedtypeflags>. typeflags: 0x01 = con signo,
+ *    0x02 = LSB primero, 0x04 = guardado por columnas (las tablas de cambios
+ *    del $31 lo usan: 6 columnas de 17).
+ *  - mmedmajorstridebits suele valer lo mismo que el tamaño del elemento en
+ *    tablas contiguas (las direcciones de tablas vecinas lo confirman), así que
+ *    solo se respeta si es MAYOR que una fila entera (relleno entre filas).
+ *  - CATEGORYMEM category="N" apunta al CATEGORY index N-1.
+ *  - <VAR id="Y" type="address" address="0x413B"/> = byte del bin en esa
+ *    dirección; type="link" linkid="0x.." = el valor de otra constante.
+ *  - Un título en blanco (" ") es un separador: no se lista.
+ * No soportado aún: ejes leídos del bin (ninguno de los cuatro los usa) y
+ * baseoffset distinto de 0 (se avisa en header.warning).
+ */
+function parseModernXDF(doc) {
+  const hdr = doc.querySelector("XDFHEADER");
+  const child = (el, tag) => (el ? Array.from(el.children).find((c) => c.tagName === tag) || null : null);
+  const childText = (el, tag, fb = "") => {
+    const c = child(el, tag);
+    return c ? c.textContent.trim() : fb;
+  };
+  const defaults = child(hdr, "DEFAULTS");
+  const defBits = xdfNum(defaults?.getAttribute("datasizeinbits")) || 8;
+  const defSigned = defaults?.getAttribute("signed") === "1";
+  const defLsb = defaults?.getAttribute("lsbfirst") === "1";
+  const baseOffset = xdfNum(childText(hdr, "baseoffset", "0")) || 0;
+  const region = child(hdr, "REGION");
+
+  const header = {
+    title: childText(hdr, "deftitle"),
+    desc: childText(hdr, "description"),
+    author: childText(hdr, "author"),
+    binSize: region ? xdfNum(region.getAttribute("size")) || null : null,
+    warning: baseOffset ? `baseoffset ${baseOffset} no soportado: las direcciones se leen tal cual` : "",
+  };
+
+  const categories = new Map();
+  hdr?.querySelectorAll("CATEGORY").forEach((c) => categories.set(xdfNum(c.getAttribute("index")), c.getAttribute("name") || ""));
+  const groupOf = (el) => {
+    const m = child(el, "CATEGORYMEM");
+    return m ? categories.get(xdfNum(m.getAttribute("category")) - 1) || "" : "";
+  };
+
+  const embedded = (el) => {
+    const ed = child(el, "EMBEDDEDDATA");
+    if (!ed) return null;
+    const flags = xdfNum(ed.getAttribute("mmedtypeflags")) || 0;
+    const addr = xdfNum(ed.getAttribute("mmedaddress"));
+    return {
+      address: Number.isNaN(addr) ? null : addr,
+      bits: xdfNum(ed.getAttribute("mmedelementsizebits")) || defBits,
+      rows: xdfNum(ed.getAttribute("mmedrowcount")) || 1,
+      cols: xdfNum(ed.getAttribute("mmedcolcount")) || 1,
+      signed: flags & 1 ? true : defSigned,
+      lsbFirst: flags & 2 ? true : defLsb,
+      byCol: !!(flags & 4),
+      majorStride: xdfNum(ed.getAttribute("mmedmajorstridebits")) || 0,
+      minorStride: xdfNum(ed.getAttribute("mmedminorstridebits")) || 0,
+    };
+  };
+
+  const byUid = new Map();
+  const pendingRefs = []; // [item, [{letter, type, address|linkid}]]
+  const mathOf = (el) => {
+    const m = child(el, "MATH");
+    if (!m) return { formula: "X", vars: [] };
+    const vars = Array.from(m.children)
+      .filter((v) => v.tagName === "VAR" && v.getAttribute("id") !== "X" && v.getAttribute("id") !== "x")
+      .map((v) => ({
+        letter: v.getAttribute("id"),
+        type: v.getAttribute("type"),
+        address: xdfNum(v.getAttribute("address")),
+        linkid: (v.getAttribute("linkid") || "").toUpperCase().replace(/^0X/, ""),
+      }));
+    return { formula: m.getAttribute("equation") || "X", vars };
+  };
+  const uidOf = (el) => (el.getAttribute("uniqueid") || "").toUpperCase().replace(/^0X/, "");
+  const titleOf = (el) => childText(el, "title");
+
+  const tables = [];
+  const constants = [];
+  const flags = [];
+
+  doc.querySelectorAll("XDFTABLE").forEach((el) => {
+    const title = titleOf(el);
+    const axes = {};
+    Array.from(el.children)
+      .filter((c) => c.tagName === "XDFAXIS")
+      .forEach((a) => (axes[a.getAttribute("id")] = a));
+    const z = axes.z;
+    const ed = z ? embedded(z) : null;
+    if (!title || !ed || ed.address === null) return; // separador o tabla sin datos
+
+    const rows = ed.rows;
+    const cols = ed.cols;
+    const bytes = Math.max(1, Math.ceil(ed.bits / 8));
+    const minor = ed.minorStride > ed.bits ? ed.minorStride / 8 : bytes; // de un elemento al siguiente
+    const lineLen = (ed.byCol ? rows : cols) * minor;
+    const major = ed.majorStride / 8 > lineLen ? ed.majorStride / 8 : lineLen; // de una fila (o columna) a la siguiente
+    const cells = [];
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const offset = ed.byCol ? ed.address + c * major + r * minor : ed.address + r * major + c * minor;
+        cells.push({ offset, bits: ed.bits, signed: ed.signed, lsbFirst: ed.lsbFirst });
+      }
+    }
+
+    const axisInfo = (a, count) => {
+      const vals = Array.from({ length: count }, (_, i) => i);
+      const text = Array.from({ length: count }, (_, i) => String(i));
+      if (a) {
+        Array.from(a.children)
+          .filter((l) => l.tagName === "LABEL")
+          .forEach((l) => {
+            const i = xdfNum(l.getAttribute("index"));
+            if (!(i >= 0 && i < count)) return;
+            const raw = l.getAttribute("value") || "";
+            text[i] = raw;
+            const n = parseFloat(raw);
+            if (!Number.isNaN(n)) vals[i] = n;
+          });
+      }
+      return { vals, text, units: a ? childText(a, "units") : "" };
+    };
+    const xa = axisInfo(axes.x, cols);
+    const ya = axisInfo(axes.y, rows);
+    const { formula, vars } = mathOf(z);
+    const t = new ParsedTable({
+      name: title,
+      rows,
+      cols,
+      cells,
+      units: childText(z, "units"),
+      xLabel: xa.units || "X",
+      yLabel: ya.units || "Y",
+      xAxis: xa.vals,
+      yAxis: ya.vals,
+      equation: formula,
+    });
+    t.xAxisText = xa.text;
+    t.yAxisText = ya.text;
+    t.group = groupOf(el);
+    t.desc = childText(el, "description");
+    if (vars.length) pendingRefs.push([t, vars]);
+    tables.push(t);
+    byUid.set(uidOf(el), t);
+  });
+
+  doc.querySelectorAll("XDFCONSTANT").forEach((el) => {
+    const title = titleOf(el);
+    const ed = embedded(el);
+    if (!title || !ed || ed.address === null) return;
+    const { formula, vars } = mathOf(el);
+    const c = new ParsedConstant({
+      name: title,
+      group: groupOf(el),
+      address: ed.address,
+      bits: ed.bits,
+      signed: ed.signed,
+      lsbFirst: ed.lsbFirst,
+      equation: formula,
+      units: childText(el, "units"),
+      desc: childText(el, "description"),
+    });
+    constants.push(c);
+    byUid.set(uidOf(el), c);
+    if (vars.length) pendingRefs.push([c, vars]);
+  });
+
+  doc.querySelectorAll("XDFFLAG").forEach((el) => {
+    const title = titleOf(el);
+    const ed = embedded(el);
+    if (!title || !ed || ed.address === null) return;
+    flags.push(
+      new ParsedFlag({
+        name: title,
+        group: groupOf(el),
+        address: ed.address,
+        bits: ed.bits,
+        mask: xdfNum(childText(el, "mask", "0x1")) || 1,
+        desc: childText(el, "description"),
+      })
+    );
+  });
+
+  let checksum = null;
+  const cs = doc.querySelector("XDFCHECKSUM");
+  if (cs) {
+    const reg = child(cs, "REGION") || cs;
+    checksum = new ParsedChecksum({
+      start: xdfNum(childText(reg, "datastart")),
+      end: xdfNum(childText(reg, "dataend")),
+      storeAddr: xdfNum(childText(reg, "storeaddress")),
+      method: xdfNum(childText(reg, "calculationmethod", "0")) || 0,
+    });
+  }
+
+  for (const [item, vars] of pendingRefs) {
+    const refs = {};
+    for (const v of vars) {
+      if (v.type === "address" && !Number.isNaN(v.address)) {
+        refs[v.letter] = new ParsedConstant({ name: `byte 0x${v.address.toString(16)}`, address: v.address, bits: defBits });
+      } else if (v.type === "link" && byUid.get(v.linkid) instanceof ParsedConstant) {
+        refs[v.letter] = byUid.get(v.linkid);
+      }
+    }
+    item.varRefs = refs;
+  }
+
+  return { tables, constants, flags, checksum, header };
+}
+
 /** Parsea un XDF (definición de tablas de bin), XML o de texto viejo. Devuelve { tables, constants, flags, checksum, header }. */
 export function parseXDF(xmlText) {
   if (isLegacyXDF(xmlText)) return parseLegacyXDF(xmlText);
@@ -523,6 +754,9 @@ export function parseXDF(xmlText) {
   if (errorNode) {
     throw new Error("XML inválido en el XDF: " + errorNode.textContent.slice(0, 200));
   }
+  // El XDF XML real de TunerPro describe cada tabla con ejes x/y/z (el z es el
+  // dato); el formato de una EMBEDDEDDATA por celda es el de defs/example.xdf.
+  if (doc.querySelector('XDFAXIS[id="z"]') || doc.querySelector("XDFCONSTANT")) return parseModernXDF(doc);
 
   const tables = [];
   const tableNodes = doc.querySelectorAll("XDFTABLE, TABLE");
