@@ -134,7 +134,7 @@ A/C y una vuelta de manejo (~550 frames válidos, sin ningún código de falla).
 
 - **Confirmado:** con el motor caliente la ECM está en lazo cerrado ~100 % del tiempo (antes
   ~10 % en ralentí) y el O2 oscila de verdad (~90 a 800 mV en ralentí caliente, antes 510 a 560).
-- **Hallazgo nuevo, sin resolver:** el BLM (corrección aprendida de combustible) se queda en
+- **Hallazgo nuevo (resuelto después, ver "Tercer caso real"):** el BLM (corrección aprendida de combustible) se queda en
   ~151 y llega a 161, con el integrador centrado en 128. La ECM está estable, pero necesita
   entre +18 % y +26 % de combustible extra; el sensor viejo lo escondía en parte. Falta medir la
   presión de combustible y revisar el sellado del sensor y la junta del escape.
@@ -188,6 +188,35 @@ de rodar sí. No afecta la exactitud del velocímetro, porque el DRAC cuenta pul
 lo único que sube es la velocidad mínima detectable, de unos 2 a unos 4 MPH.
 
 En resumen: no se cambió ninguna pieza. Se le bajó la ganancia a un sensor demasiado sensible.
+
+## Tercer caso real: la mezcla pobre y la detonación (2026-09-28)
+
+Desde que se cambió el sensor O2 quedó a la vista que el motor iba pobre: la ECM tenía que
+agregar entre +23 % y +28 % de combustible en crucero (BLM 158–164) y el contador de
+detonación subía con carga, sobre todo en caliente. Antes de tocar nada se descartó lo que se
+podía medir: fugas de vacío (17–17.8 inHg estables), sensores, la bomba (1.5 L en 10 s) y la
+presión del TBI (12–14 psi con llave en ON, en ralentí y con el A/C puesto).
+
+La prueba fue cambiar una sola cosa: los inyectores que traía (GP Sorensen) por un par GM
+5235203, que da ~36 % más caudal. Se borró la corrección aprendida desconectando la batería y
+se repitió la misma ruta:
+
+| | Antes | Con los 203, tiempo 0° | Con los 203, tiempo 10° |
+|---|---|---|---|
+| Corrección de crucero (BLM) | 158 (+23 %) | 123 (−4 %) | 119 (−7 %) |
+| Detonación por lectura con carga fuerte | 1.8–3.2 | 0.46 | 0.55 |
+
+La cuenta cuadra: el motor pide lo mismo de siempre y ahora el inyector se lo da. Ojo, eso no
+demuestra que los inyectores viejos fallaran: el resultado sería el mismo si el motor pidiera
+más combustible por otra razón. Los 203 son la solución, no la autopsia. La detonación que
+queda aparece casi solo en 5.ª a menos de ~1900 RPM y casi a fondo; bajando a 4.ª desaparece.
+
+También se probó el tiempo base en 0°, 5° y 10°. La detonación salió igual a 0° que a 10°. El
+ralentí con el A/C parecía empeorar con más avance, pero no: sin A/C el motor consume el mismo
+aire con cualquier tiempo, y la diferencia con A/C era cuánto estaba jalando el compresor en
+cada captura. Ese cabeceo con el A/C parado viene de la calibración de la ECM (el ralentí
+objetivo con A/C es bajo y la IAC no se adelanta a la carga) y solo se arregla reprogramando
+el chip. Queda un "pop" leve en ralentí que aparece con avance y no a 0°; es inofensivo.
 
 ## Licencia
 
