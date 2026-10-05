@@ -1,0 +1,195 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ADXFORMAT version="1.0">
+  <ecu>GM ECM 1228062 - GMC Sonoma 1993 2.8L TBI (LL2) - definicion ALDL "A040"</ecu>
+  <!--
+    Convertido a mano el 2026-09-15 desde A040.ads (formato WinALDL/ScannerPro,
+    autor original: Robert Saar). El .ads describe: 160 baud, "iNumBytesInPayload=20".
+
+    HISTORIAL DE DEPURACIÓN DE OFFSETS (déjalo aquí, costó dos vueltas):
+    1. Primera versión: byteindex = btByteNumber_original - 1. Con captura real
+       "llave en ON, motor apagado" dio valores que PARECÍAN mal (RPM~5000,
+       batería 0V) -> se cambió a byteindex = btByteNumber_original (sin restar).
+    2. Esa "corrección" fue un error: con el motor apagado casi cualquier
+       mapeo da valores creíbles (todo está en cero/estático), así que no era
+       una prueba confiable. Con el motor REALMENTE encendido (captura larga,
+       2026-09-15) se ve clarísimo: IAC bajando suave, temperatura subiendo
+       suave (motor calentando), MAP cayendo de ~4.3V a ~1.2V justo cuando el
+       motor prende, RPM saltando a ~1500 y asentándose en ~1000 - un patrón
+       físico perfecto - y SOLO calza con la resta original (byteindex =
+       btByteNumber_original - 1). Quedó así definitivamente. ALDL_FRAME_BYTES
+       volvió a 20 en el firmware (ya no 21).
+    3. Bug real encontrado en esa misma captura: de vez en cuando el firmware
+       "engancha" un SYNC falso positivo (ruido) y captura 20 bytes que NO
+       arrancan en el lugar correcto - un frame entero desalineado, no ruido
+       bit a bit. Eso es lo que se veía como "80mph estando quieto" o "13000
+       RPM". El firmware ahora valida el PROM ID (constante, bytes 1-2) antes
+       de mandar cada frame, y descarta los que no calzan.
+
+    YA INCLUIDO (2026-09-22): el PROM ID de 16 bits y la sección BITS del .ads.
+    Antes faltaban porque el parser solo leía un byte por parámetro; ahora
+    ParsedParameter soporta bytelength="2" (big-endian), signed="true" y
+    bit="0..7" (bit 0 = LSB, la convención del .ads). El .ads original completo
+    quedó en ~/Downloads/A040.ads.
+
+    Esto SÍ es un mapeo real de un ECM real (a diferencia de defs/example.adx,
+    que es inventado), y ya validado contra una captura larga con el motor
+    encendido de verdad, no solo con la llave en ON.
+  -->
+  <!--
+    FRAMES CORRUPTOS (2026-09-28): validmin/validmax = físicamente imposible,
+    spike = salto aislado (se aleja más que eso de los dos vecinos, que
+    coinciden entre sí), monotonic = contador que no baja y vuelve. Un frame
+    que rompe alguna se marca "sospechoso" (columna del CSV) y el replay lo
+    excluye; ver src/frame-check.js. Umbrales calibrados sobre 12,292 frames
+    del 2026-09-22 al 28: VSS salto real máx. 8 MPH (corruptos 211 y 254),
+    temperatura salto real máx. 2.5 °C, BLM real 118-172 (corruptos 0/2/16/240),
+    RPM real máx. 3450, batería en arranque ~8-10 V (0 V = frame de apagado de
+    llave, 1.6-2.8 V = bit perdido).
+  -->
+  <PARAMETERGROUP name="Motor">
+    <PARAMETER id="rpm" name="RPM" units="rpm" byteindex="7" bytelength="1" equation="X*25" validmax="6000" />
+    <!-- warnmax 105: tope del rango típico de fábrica (85-105 °C, 3B-8). Sin
+         warnmin para no marcar en rojo cada calentamiento. -->
+    <PARAMETER id="coolant_c" name="Temperatura refrigerante" units="C" byteindex="4" bytelength="1" table="coolant_c" warnmax="105" spike="5" />
+    <PARAMETER id="tps_v" name="TPS (voltaje)" units="V" byteindex="8" bytelength="1" equation="X*0.0196" />
+    <PARAMETER id="map_v" name="MAP (voltaje)" units="V" byteindex="6" bytelength="1" equation="X*0.0196" />
+    <PARAMETER id="iac" name="Posicion IAC" units="Steps" byteindex="3" bytelength="1" equation="X" />
+    <PARAMETER id="speed" name="Velocidad del vehiculo" units="MPH" byteindex="5" bytelength="1" equation="X" validmax="120" spike="15" />
+  </PARAMETERGROUP>
+
+  <PARAMETERGROUP name="Combustible / O2">
+    <!-- flatalert: si el O2 no cambia de valor por varios segundos con el motor
+         encendido, la tarjeta se marca como "sin cambios" - es justo el síntoma
+         que se está investigando (sensor "pegado"/enfriado). -->
+    <PARAMETER id="o2" name="Sensor O2" units="mV" byteindex="10" bytelength="1" equation="X*4.44" flatalert="true" />
+    <!-- warnmin/warnmax: spec de fábrica, "Typical Scan Data Values" del manual
+         ST-336-93, pág. 3B-8: short term (INT) 110-145, long term (BLM) 118-138.
+         OJO: el spec es para ralentí caliente en lazo cerrado. Con carga el BLM
+         baja a 112-115 con los inyectores 203 y la tarjeta se pone roja: eso es
+         normal, no una falla. El 3B-11 dice que la condición del código 44
+         (pobre) deja el BLM "alrededor de 150". -->
+    <PARAMETER id="int" name="Integrator (INT)" units="" byteindex="9" bytelength="1" equation="X" warnmin="110" warnmax="145" />
+    <PARAMETER id="blm" name="Block Learn (BLM)" units="" byteindex="18" bytelength="1" equation="X" warnmin="118" warnmax="138" validmin="80" validmax="200" />
+    <PARAMETER id="rl_trans" name="Transiciones Rico/Pobre" units="Transitions" byteindex="19" bytelength="1" equation="X" />
+    <PARAMETER id="knock" name="Contador de detonacion" units="" byteindex="17" bytelength="1" equation="X" monotonic="true" />
+  </PARAMETERGROUP>
+
+  <PARAMETERGROUP name="Electrico">
+    <PARAMETER id="batt" name="Voltaje bateria" units="V" byteindex="15" bytelength="1" equation="X*0.1" validmin="6" validmax="17" />
+  </PARAMETERGROUP>
+
+  <!--
+    BANDERAS DE 1 BIT. bit="N" con bit 0 = LSB (convención del .ads).
+    invert="true" para las activas en bajo. alertif="true|false" marca en rojo
+    el estado que interesa cazar.
+
+    De dónde salen: sección BITS de A040.ads, más dos deducidas de los logs
+    (marcadas abajo). Validadas contra 16 logs del Sonoma del 20 al 22-sep.
+
+    El hallazgo del 2026-09-22 que hace que valga la pena tenerlas en pantalla:
+    la ECM sale a lazo ABIERTO en ralentí (no por temperatura - manejando a
+    96 °C cierra el lazo el 100 % del tiempo). Sin estas banderas eso solo se
+    veía decodificando raw_frame con un script aparte.
+  -->
+  <PARAMETERGROUP name="Estado de la mezcla">
+    <PARAMETER id="loop" name="Lazo de control" byteindex="14" bit="7"
+               truelabel="Cerrado" falselabel="Abierto" alertif="false" />
+    <PARAMETER id="rich_lean" name="Mezcla (O2)" byteindex="14" bit="6"
+               truelabel="Rica" falselabel="Pobre" />
+    <PARAMETER id="blm_enable" name="BLM habilitado" byteindex="14" bit="1"
+               truelabel="Si" falselabel="No" />
+    <!-- b0 viene invertido en el .ads: 1 = NO esta en open loop idle. -->
+    <PARAMETER id="ol_idle" name="Open Loop Idle" byteindex="14" bit="0" invert="true"
+               truelabel="Si" falselabel="No" />
+    <PARAMETER id="async_fuel" name="Inyeccion asincrona" byteindex="14" bit="4"
+               truelabel="Si" falselabel="No" />
+  </PARAMETERGROUP>
+
+  <PARAMETERGROUP name="Codigos de falla">
+    <!--
+      Solo estan mapeados los tres codigos que el .ads identifica por bit. Los
+      bytes 11, 12 y 13 completos guardan todos los codigos: si CUALQUIERA de
+      los tres es distinto de 0x00 hay un codigo, aunque no este mapeado aqui.
+      En los 16 logs del Sonoma los tres valen 0x00 siempre (ningun codigo).
+    -->
+    <PARAMETER id="code_13" name="Codigo 13 (O2 abierto)" byteindex="11" bit="6"
+               truelabel="FALLA" falselabel="ok" alertif="true" spike="0.5" />
+    <PARAMETER id="code_44" name="Codigo 44 (O2 pobre)" byteindex="13" bit="6"
+               truelabel="FALLA" falselabel="ok" alertif="true" spike="0.5" />
+    <PARAMETER id="code_45" name="Codigo 45 (O2 rico)" byteindex="13" bit="5"
+               truelabel="FALLA" falselabel="ok" alertif="true" spike="0.5" />
+  </PARAMETERGROUP>
+
+  <PARAMETERGROUP name="Entradas y salidas">
+    <!-- A/C Request es activo en bajo: el bit en 0 significa A/C pedido. -->
+    <PARAMETER id="ac_req" name="A/C pedido" byteindex="16" bit="7" invert="true"
+               truelabel="Si" falselabel="No" />
+    <!-- No esta en el .ads: deducida de los logs el 2026-09-22 (sigue a
+         ac_req siempre que el motor gire; con llave ON y motor apagado vale 0
+         aunque se pida A/C). -->
+    <PARAMETER id="ac_clutch" name="Embrague del compresor" byteindex="16" bit="2"
+               truelabel="Enganchado" falselabel="Suelto" />
+    <PARAMETER id="pn_switch" name="Park / Neutral" byteindex="16" bit="4"
+               truelabel="P/N" falselabel="En marcha" />
+    <PARAMETER id="tcc" name="TCC trabado" byteindex="16" bit="3"
+               truelabel="Si" falselabel="No" />
+    <PARAMETER id="air_switch" name="AIR al escape" byteindex="16" bit="0"
+               truelabel="Si" falselabel="No" />
+    <PARAMETER id="air_divert" name="AIR desviado" byteindex="16" bit="1"
+               truelabel="Si" falselabel="No" />
+    <!-- Vale 0 con la llave en ON y el motor apagado: sirve para comprobar
+         que el byte 0 esta bien mapeado. -->
+    <PARAMETER id="ref_pulse" name="Pulso de referencia" byteindex="0" bit="2"
+               truelabel="Si" falselabel="No" />
+  </PARAMETERGROUP>
+
+  <PARAMETERGROUP name="Identificacion">
+    <!--
+      16 bits big-endian. Es constante (0x0227 = 551 en este ECM): sirve de
+      comprobacion de alineamiento, es lo mismo que valida el firmware con
+      ALDL_PROM_ID_HI/LO antes de mandar cada frame.
+    -->
+    <PARAMETER id="prom_id" name="PROM ID" byteindex="1" bytelength="2" equation="X" validmin="551" validmax="551" />
+  </PARAMETERGROUP>
+
+  <LOOKUPTABLE id="coolant_c">
+    <ENTRY raw="12" value="150.00" />
+    <ENTRY raw="13" value="145.00" />
+    <ENTRY raw="14" value="140.00" />
+    <ENTRY raw="16" value="135.00" />
+    <ENTRY raw="18" value="130.00" />
+    <ENTRY raw="21" value="125.00" />
+    <ENTRY raw="23" value="120.00" />
+    <ENTRY raw="26" value="115.00" />
+    <ENTRY raw="30" value="110.00" />
+    <ENTRY raw="34" value="105.00" />
+    <ENTRY raw="39" value="100.00" />
+    <ENTRY raw="44" value="95.00" />
+    <ENTRY raw="50" value="90.00" />
+    <ENTRY raw="56" value="85.00" />
+    <ENTRY raw="64" value="80.00" />
+    <ENTRY raw="72" value="75.00" />
+    <ENTRY raw="81" value="70.00" />
+    <ENTRY raw="92" value="65.00" />
+    <ENTRY raw="102" value="60.00" />
+    <ENTRY raw="114" value="55.00" />
+    <ENTRY raw="126" value="50.00" />
+    <ENTRY raw="139" value="45.00" />
+    <ENTRY raw="152" value="40.00" />
+    <ENTRY raw="165" value="35.00" />
+    <ENTRY raw="177" value="30.00" />
+    <ENTRY raw="189" value="25.00" />
+    <ENTRY raw="199" value="20.00" />
+    <ENTRY raw="209" value="15.00" />
+    <ENTRY raw="218" value="10.00" />
+    <ENTRY raw="225" value="5.00" />
+    <ENTRY raw="231" value="0.00" />
+    <ENTRY raw="237" value="-5.00" />
+    <ENTRY raw="241" value="-10.00" />
+    <ENTRY raw="245" value="-15.00" />
+    <ENTRY raw="247" value="-20.00" />
+    <ENTRY raw="250" value="-25.00" />
+    <ENTRY raw="251" value="-30.00" />
+    <ENTRY raw="253" value="-40.00" />
+  </LOOKUPTABLE>
+</ADXFORMAT>

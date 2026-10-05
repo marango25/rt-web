@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RT-Web</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <h1>RT-Web</h1>
+      <div class="subtitle">Editor XDF/ADX + logging en vivo</div>
+
+      <div class="status-row">
+        <div id="status-dot" class="status-dot"></div>
+        <span id="status-text">sin conectar</span>
+      </div>
+
+      <div class="field">
+        <label for="vehicle-tag-input">Vehículo</label>
+        <input id="vehicle-tag-input" type="text" placeholder="ej. GMC Sonoma 1993" />
+        <div class="hint">Etiqueta con la que se guardan tus sesiones para poder filtrarlas después.</div>
+      </div>
+
+      <div class="field">
+        <label for="file-input">Cargar definición (.xdf / .adx)</label>
+        <input id="file-input" type="file" accept=".xdf,.adx,.xml" />
+        <div class="hint">Puedes cargar ambos (uno tras otro): un .xdf de tablas y un .adx de parámetros en vivo. Con los dos cargados, la tabla resalta en qué celda está operando el motor ahora mismo.</div>
+      </div>
+
+      <div class="field">
+        <label for="bin-input">Binario de calibración (.bin) — opcional</label>
+        <input id="bin-input" type="file" accept=".bin" />
+        <div class="hint">Solo para ver valores reales en las celdas de una tabla .xdf. Sin esto, la tabla muestra su estructura (offsets) pero no valores.</div>
+      </div>
+
+      <div class="field">
+        <label for="host-input">Host del ESP8266 (modo WiFi)</label>
+        <input id="host-input" type="text" placeholder="192.168.4.1" />
+        <div class="hint">IP fija cuando estás conectado a la red que transmite el propio ESP8266.</div>
+      </div>
+
+      <div class="field">
+        <button id="connect-btn">Conectar por WiFi</button>
+      </div>
+
+      <div class="field">
+        <button id="usb-btn" class="secondary">Conectar por USB</button>
+        <div id="usb-hint" class="hint">Lee los frames directo por el cable USB: sin WiFi, tu computadora conserva su internet.</div>
+      </div>
+
+      <div class="field">
+        <button id="sim-btn" class="secondary">Modo simulado</button>
+        <div class="hint">Genera datos falsos oscilando para probar la UI sin el ESP8266.</div>
+      </div>
+
+      <div class="field log-field">
+        <label>Log de la sesión</label>
+        <div id="log-count" class="hint">0 muestras registradas</div>
+        <div class="log-buttons">
+          <button id="download-log-btn" class="secondary">Descargar CSV</button>
+          <button id="clear-log-btn" class="secondary">Limpiar</button>
+        </div>
+      </div>
+
+      <div class="field marker-field">
+        <label>Accesorios encendidos ahora</label>
+        <div class="hint">Se escriben en cada fila del CSV mientras estén marcados.</div>
+        <div class="checklist">
+          <label class="check-item"><input type="checkbox" data-flag="A/C" /> A/C</label>
+          <label class="check-item"><input type="checkbox" data-flag="Luces" /> Luces</label>
+          <label class="check-item"><input type="checkbox" data-flag="Ventilador" /> Ventilador</label>
+          <label class="check-item"><input type="checkbox" data-flag="Desempañador" /> Desempañador</label>
+        </div>
+        <input id="marker-other" type="text" placeholder="Otro (opcional)" />
+        <div id="marker-status" class="hint"></div>
+      </div>
+
+      <div class="field replay-field">
+        <label for="replay-input-a">Repetir / comparar logs CSV</label>
+        <div class="hint">Log A</div>
+        <input id="replay-input-a" type="file" accept=".csv" />
+        <div class="hint">Log B (opcional, para comparar superpuesto)</div>
+        <input id="replay-input-b" type="file" accept=".csv" />
+        <button id="replay-clear-btn" class="secondary">Volver a vivo</button>
+      </div>
+
+      <div class="field replay-field">
+        <label for="sim-bin-input">Simular el chip sobre el log A</label>
+        <div class="hint">Con el .xdf ($4E) y el .bin de arriba cargados (chip A), el replay agrega el avance y el EGR que ordenaría la ECM en cada cuadro. Estimación para comparar versiones, no medición.</div>
+        <div class="hint">Chip B (opcional, versión modificada)</div>
+        <input id="sim-bin-input" type="file" accept=".bin" />
+        <div class="hint">Tiempo base del distribuidor en ese log</div>
+        <select id="sim-base-select">
+          <option value="10">10° (fábrica)</option>
+          <option value="5">5°</option>
+          <option value="0">0°</option>
+        </select>
+      </div>
+
+      <div class="field replay-field">
+        <label for="bindiff-input-a">Comparar binarios (.bin)</label>
+        <div class="hint">Binario A</div>
+        <input id="bindiff-input-a" type="file" accept=".bin" />
+        <div class="hint">Binario B (para ver diferencias byte a byte)</div>
+        <input id="bindiff-input-b" type="file" accept=".bin" />
+        <button id="bindiff-clear-btn" class="secondary">Volver a vivo</button>
+      </div>
+
+      <div class="field session-field">
+        <label>Sesiones guardadas</label>
+        <div class="hint">Se guardan solas cada pocos segundos mientras hay datos entrando, por vehículo.</div>
+        <select id="session-vehicle-filter"></select>
+        <div id="session-list" class="session-list"></div>
+      </div>
+    </aside>
+
+    <main id="main" class="main">
+      <div class="empty-state">Carga una definición para empezar.</div>
+    </main>
+  </div>
+
+  <!--
+    Import map: resuelve el specifier "three" (usado por src/vendor/OrbitControls.js,
+    que importa "from 'three'" tal cual el paquete real de npm) hacia el archivo
+    vendorizado localmente. Necesario para que la vista 3D (src/surface3d.js,
+    cargada con import() dinámico solo cuando se abre - ver openSurface3D en
+    main.js) funcione offline, sin depender de un CDN externo ni de un bundler.
+  -->
+  <script type="importmap">
+    { "imports": { "three": "./vendor/three.module.min.js" } }
+  </script>
+  <script type="module" src="main.js"></script>
+</body>
+</html>

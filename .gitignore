@@ -1,0 +1,10 @@
+firmware/esp8266_aldl_bridge/secrets.h
+.DS_Store
+
+# Bins de GM, definiciones de terceros y logs del camión: NO van al repo público.
+# Van al espejo privado rt-web-privado (rama datos) con tools/sync-privado.sh.
+calibracion/
+pruebas/
+logs/
+disenos/
+.git-privado/

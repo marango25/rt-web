@@ -1,0 +1,2109 @@
+import { parseXDF, parseADX, detectFormat } from "./xdf-parser.js";
+import { RTBridgeClient } from "./ws-client.js";
+import { SerialBridgeClient } from "./serial-client.js";
+import { SimSource } from "./sim-source.js";
+import { saveSession, listSessions, deleteSession } from "./db.js";
+import { checkFrames } from "./frame-check.js";
+import { buildSparkModel, simulateLog, nearestCell, mapVoltsToKpa } from "./prom-sim.js";
+
+let loadedTables = [];
+let loadedXdf = { constants: [], flags: [], checksum: null, header: {} }; // lo del .xdf que no son tablas (XDF de texto viejo)
+let loadedParams = [];
+let currentValues = {}; // id -> valor calculado
+let paramHistory = {}; // id -> number[] (ventana reciente, para la gráfica)
+let paramHistoryTimes = {}; // id -> number[] (mismos índices que paramHistory, timestamp ms) - para el tooltip al pasar el cursor
+let paramMeta = {}; // id -> { lastValue, lastChangeTs } - para detectar valores "congelados"
+let expandedParamId = null; // id del parámetro con vista de gráfica grande abierta, o null
+let sessionLog = []; // { t, values, raw, evento } por cada frame recibido - sin límite, para descargar como CSV
+let activeFlags = new Set(); // accesorios marcados como encendidos ahora mismo (checkboxes)
+let otherFlagText = ""; // texto libre del campo "Otro"
+let viewMode = "live"; // "live" | "replay" | "bindiff" - se activan al cargar un CSV/bin guardado
+let binDiffFiles = { A: null, B: null }; // { name, bytes: Uint8Array } por slot, para el comparador de binarios
+let replayLogs = { A: null, B: null }; // { name, columns: [{key, units}], rows: [{t, values}] }
+let replayZoom = { start: 0, end: 1 }; // fracciones 0..1 - ventana visible, compartida por todas las gráficas del replay
+let replayDragState = null; // { startX, startZoom, canvas } mientras se arrastra, o null
+let currentReplayCanvases = []; // [{ key, canvas }] de la sesión de replay activa (para redibujar sin reconstruir el DOM)
+let currentSessionId = null; // id de la sesión que se está autoguardando en IndexedDB
+let sessionStartedAt = 0;
+let loadedBin = null; // Uint8Array del .bin de calibración cargado, o null (las tablas se ven "vacías" sin esto)
+let loadedBinName = "";
+let simBinB = null; // { name, bytes } - versión modificada del chip para comparar en la simulación del replay
+let simBaseDeg = 10; // tiempo base del distribuidor en el log del replay (la ECM ordena suponiendo 10°)
+let axisOverrides = {}; // `${tableIdx}:${axis}` -> id de parámetro elegido a mano, o "" para usar el auto-match
+let lastFrameProto = "160"; // el firmware autodetecta 160/8192 baud y lo manda en cada frame (ver ws-client.js) -
+                             // "8192" son bytes crudos sin frame/checksum validado, no decodificados de verdad
+let vehicleTag = "";
+try {
+  vehicleTag = localStorage.getItem("rtweb_vehicle_tag") || "";
+} catch {
+  // localStorage puede fallar en navegación privada - no es crítico, solo se pierde el recordar el último valor
+}
+let lastAutosaveAt = 0;
+const MAX_HISTORY = 600;
+const STUCK_ALERT_MS = 8000; // tiempo sin cambio para marcar un parámetro con flatalert="true" como "congelado"
+const AUTOSAVE_INTERVAL_MS = 5000;
+
+const el = {
+  fileInput: document.getElementById("file-input"),
+  binInput: document.getElementById("bin-input"),
+  hostInput: document.getElementById("host-input"),
+  connectBtn: document.getElementById("connect-btn"),
+  usbBtn: document.getElementById("usb-btn"),
+  usbHint: document.getElementById("usb-hint"),
+  simBtn: document.getElementById("sim-btn"),
+  downloadLogBtn: document.getElementById("download-log-btn"),
+  clearLogBtn: document.getElementById("clear-log-btn"),
+  logCount: document.getElementById("log-count"),
+  markerOther: document.getElementById("marker-other"),
+  markerStatus: document.getElementById("marker-status"),
+  replayInputA: document.getElementById("replay-input-a"),
+  replayInputB: document.getElementById("replay-input-b"),
+  replayClearBtn: document.getElementById("replay-clear-btn"),
+  bindiffInputA: document.getElementById("bindiff-input-a"),
+  bindiffInputB: document.getElementById("bindiff-input-b"),
+  bindiffClearBtn: document.getElementById("bindiff-clear-btn"),
+  simBinInput: document.getElementById("sim-bin-input"),
+  simBaseSelect: document.getElementById("sim-base-select"),
+  vehicleTagInput: document.getElementById("vehicle-tag-input"),
+  sessionVehicleFilter: document.getElementById("session-vehicle-filter"),
+  sessionList: document.getElementById("session-list"),
+  statusDot: document.getElementById("status-dot"),
+  statusText: document.getElementById("status-text"),
+  main: document.getElementById("main"),
+};
+
+function setStatus(state, detail) {
+  el.statusDot.className =
+    "status-dot" +
+    (state === "conectado" ? " ok" : state === "simulado" ? " sim" : state === "error" || state === "perdido" ? " bad" : "");
+  el.statusText.textContent = detail ? `${state} (${detail})` : state;
+}
+
+function bytesToHex(bytes) {
+  return bytes.map((b) => (b & 0xff).toString(16).padStart(2, "0")).join(" ");
+}
+
+function applyFrame(rawBytes, t, proto) {
+  if (proto && proto !== lastFrameProto) {
+    console.warn(`Protocolo ALDL cambió a "${proto}" - ver el aviso en la vista en vivo.`);
+  }
+  if (proto) lastFrameProto = proto;
+
+  const now = Date.now();
+  const outOfRangeLabels = []; // columna propia "fuera_de_rango" en el CSV
+  const stuckLabels = []; // se suman a la columna "evento", junto a lo marcado manualmente
+
+  // p.read() saca el crudo del frame (1 o 2 bytes, con signo o no, o un solo
+  // bit si es bandera) y le aplica la ecuación/tabla. Un frame más corto de
+  // lo que pide el parámetro devuelve null: se salta, en vez de registrar un
+  // 0 que después parece un dato real.
+  const frameValues = {};
+  loadedParams.forEach((p) => {
+    const value = p.read(rawBytes);
+    if (value !== null) frameValues[p.id] = value;
+  });
+
+  // Un frame con algo físicamente imposible (VSS 211, batería 0 V del apagado de
+  // llave, BLM 240...) se guarda en el log marcado, pero no toca las tarjetas,
+  // gráficas ni alertas en vivo. Ver src/frame-check.js.
+  const impossible = loadedParams.length ? checkFrames(loadedParams, [frameValues])[0] : "";
+  if (impossible) {
+    sessionLog.push({
+      t: now,
+      values: { ...currentValues, ...frameValues },
+      raw: rawBytes.slice(),
+      evento: currentEventoText([]),
+      fueraDeRango: "",
+      sospechoso: impossible,
+    });
+    updateSuspectFlags();
+    updateLogCount();
+    maybeAutosaveSession();
+    return;
+  }
+
+  loadedParams.forEach((p) => {
+    const value = frameValues[p.id];
+    if (value === undefined) return;
+    currentValues[p.id] = value;
+
+    const hist = paramHistory[p.id] || (paramHistory[p.id] = []);
+    const histT = paramHistoryTimes[p.id] || (paramHistoryTimes[p.id] = []);
+    hist.push(value);
+    histT.push(now);
+    if (hist.length > MAX_HISTORY) {
+      hist.shift();
+      histT.shift();
+    }
+
+    const meta = paramMeta[p.id] || (paramMeta[p.id] = { lastValue: value, lastChangeTs: now });
+    if (meta.lastValue !== value) {
+      meta.lastValue = value;
+      meta.lastChangeTs = now;
+    }
+
+    const { outOfRange, isStuck } = evaluateAlerts(p, value, now);
+    if (outOfRange) outOfRangeLabels.push(p.name);
+    if (isStuck) stuckLabels.push(`${p.name} congelado`);
+  });
+
+  if (loadedParams.length) {
+    sessionLog.push({
+      t: now,
+      values: { ...currentValues },
+      raw: rawBytes.slice(),
+      evento: currentEventoText(stuckLabels),
+      fueraDeRango: outOfRangeLabels.join(", "),
+      sospechoso: "",
+    });
+    updateSuspectFlags();
+    updateLogCount();
+  }
+
+  maybeAutosaveSession();
+
+  if (viewMode === "live") refreshLiveFrame();
+}
+
+/**
+ * Las reglas de salto aislado necesitan el frame siguiente: al llegar cada
+ * frame se re-evalúa el anterior (ya con vecinos) y el nuevo (solo rangos).
+ */
+function updateSuspectFlags() {
+  const n = sessionLog.length;
+  if (!n || !loadedParams.length) return;
+  const from = Math.max(0, n - 3);
+  const res = checkFrames(
+    loadedParams,
+    sessionLog.slice(from).map((e) => e.values)
+  );
+  for (let i = Math.max(from, n - 2); i < n; i++) sessionLog[i].sospechoso = res[i - from];
+}
+
+function updateLogCount() {
+  if (!el.logCount) return;
+  const bad = sessionLog.filter((e) => e.sospechoso).length;
+  el.logCount.textContent = `${sessionLog.length} muestras registradas${bad ? ` (${bad} sospechosas)` : ""}`;
+}
+
+function csvField(v) {
+  const s = String(v);
+  return /["\n,]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function downloadLog() {
+  if (!sessionLog.length || !loadedParams.length) {
+    alert("No hay datos registrados todavía.");
+    return;
+  }
+
+  const headers = [
+    "timestamp_iso",
+    ...loadedParams.map((p) => csvField(`${p.name} (${p.units})`)),
+    "evento",
+    "fuera_de_rango",
+    "sospechoso",
+    "raw_frame",
+  ];
+  const rows = sessionLog.map((entry) => {
+    const iso = new Date(entry.t).toISOString();
+    // Las banderas salen como 1/0 enteros (no "1.000"): así el CSV se sigue
+    // pudiendo leer como números en el replay y en cualquier script, y no
+    // aparece un booleano disfrazado de medida con tres decimales.
+    const vals = loadedParams.map((p) => {
+      const v = entry.values[p.id];
+      if (v === undefined) return "";
+      return p.isFlag ? String(v ? 1 : 0) : v.toFixed(3);
+    });
+    const evento = csvField(entry.evento || "");
+    const fueraDeRango = csvField(entry.fueraDeRango || "");
+    const sospechoso = csvField(entry.sospechoso || "");
+    const rawHex = csvField(entry.raw ? bytesToHex(entry.raw) : "");
+    return [iso, ...vals, evento, fueraDeRango, sospechoso, rawHex].join(",");
+  });
+  const csv = [headers.join(","), ...rows].join("\n");
+
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `rtweb-log-${new Date().toISOString().replace(/[:.]/g, "-")}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// --- Base de datos de sesiones (IndexedDB) ----------------------------------
+// Autoguarda la sesión actual cada pocos segundos mientras hay datos
+// entrando, etiquetada con el vehículo, para no perderla si se cierra la
+// pestaña por accidente y para poder filtrar/recargar sesiones pasadas.
+
+/**
+ * Id simple sin depender de crypto.randomUUID(): ese método requiere un
+ * "contexto seguro" (https o localhost), y este proyecto se sirve típicamente
+ * por http plano desde el ESP8266/una IP de LAN (ej. http://192.168.0.167),
+ * donde randomUUID() no existe.
+ */
+function newId() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function startNewSession() {
+  currentSessionId = newId();
+  sessionStartedAt = Date.now();
+  lastAutosaveAt = 0;
+}
+
+function currentParamsSnapshot() {
+  return loadedParams.map((p) => ({ id: p.id, name: p.name, units: p.units }));
+}
+
+async function persistCurrentSession() {
+  if (!currentSessionId || !sessionLog.length) return;
+  const session = {
+    id: currentSessionId,
+    vehicleTag: vehicleTag || "(sin vehículo)",
+    startedAt: sessionStartedAt,
+    updatedAt: Date.now(),
+    paramsSnapshot: currentParamsSnapshot(),
+    rows: sessionLog,
+  };
+  try {
+    await saveSession(session);
+    refreshSessionList();
+  } catch (err) {
+    console.warn("No se pudo guardar la sesión en la base de datos:", err);
+  }
+}
+
+function maybeAutosaveSession() {
+  const now = Date.now();
+  if (now - lastAutosaveAt < AUTOSAVE_INTERVAL_MS) return;
+  lastAutosaveAt = now;
+  persistCurrentSession();
+}
+
+/** Convierte una sesión guardada al mismo formato {name, columns, rows} que usa el replay de CSV. */
+function sessionToReplayLog(session) {
+  const columns = session.paramsSnapshot.map((p) => ({ key: p.name, units: p.units }));
+  const rows = session.rows.map((r) => {
+    const values = {};
+    session.paramsSnapshot.forEach((p) => {
+      if (r.values[p.id] !== undefined) values[p.name] = r.values[p.id];
+    });
+    return { t: r.t, values, sospechoso: r.sospechoso };
+  });
+  return dropSuspectRows({ name: `${session.vehicleTag} · ${new Date(session.startedAt).toLocaleString()}`, columns, rows });
+}
+
+async function refreshSessionList() {
+  let sessions;
+  try {
+    sessions = await listSessions();
+  } catch (err) {
+    console.warn("No se pudo leer la base de datos de sesiones:", err);
+    return;
+  }
+
+  const tags = [...new Set(sessions.map((s) => s.vehicleTag).filter(Boolean))];
+  const filterVal = el.sessionVehicleFilter.value;
+  el.sessionVehicleFilter.innerHTML =
+    `<option value="">Todos los vehículos</option>` +
+    tags.map((t) => `<option value="${t}"${t === filterVal ? " selected" : ""}>${t}</option>`).join("");
+
+  const filtered = filterVal ? sessions.filter((s) => s.vehicleTag === filterVal) : sessions;
+
+  if (!filtered.length) {
+    el.sessionList.innerHTML = `<div class="hint">Sin sesiones guardadas todavía.</div>`;
+    return;
+  }
+
+  el.sessionList.innerHTML = filtered
+    .map(
+      (s) => `
+    <div class="session-item">
+      <div class="session-info">
+        <div class="session-tag">${s.vehicleTag}</div>
+        <div class="hint">${new Date(s.startedAt).toLocaleString()} · ${s.rows.length} muestras</div>
+      </div>
+      <div class="session-actions">
+        <button type="button" class="load-session" data-id="${s.id}">Cargar</button>
+        <button type="button" class="delete-session" data-id="${s.id}">✕</button>
+      </div>
+    </div>
+  `
+    )
+    .join("");
+}
+
+el.vehicleTagInput.value = vehicleTag;
+el.vehicleTagInput.addEventListener("input", () => {
+  vehicleTag = el.vehicleTagInput.value.trim();
+  try {
+    localStorage.setItem("rtweb_vehicle_tag", vehicleTag);
+  } catch {
+    // no crítico si falla (navegación privada, storage bloqueado, etc.)
+  }
+});
+
+el.sessionVehicleFilter.addEventListener("change", refreshSessionList);
+
+el.sessionList.addEventListener("click", async (evt) => {
+  const loadBtn = evt.target.closest(".load-session");
+  const delBtn = evt.target.closest(".delete-session");
+  if (loadBtn) {
+    let sessions;
+    try {
+      sessions = await listSessions();
+    } catch (err) {
+      console.warn(err);
+      return;
+    }
+    const session = sessions.find((s) => s.id === loadBtn.dataset.id);
+    if (session) {
+      replayLogs.A = sessionToReplayLog(session);
+      renderReplay();
+    }
+  } else if (delBtn) {
+    try {
+      await deleteSession(delBtn.dataset.id);
+    } catch (err) {
+      console.warn(err);
+    }
+    refreshSessionList();
+  }
+});
+
+const bridge = new RTBridgeClient({
+  onStatus: setStatus,
+  onFrame: applyFrame,
+});
+
+const sim = new SimSource({ onFrame: applyFrame });
+
+// Mismo pipeline (applyFrame) que el WebSocket, pero leyendo el puerto USB directo:
+// no necesita red WiFi, así que la computadora no pierde su internet.
+const serialBridge = new SerialBridgeClient({
+  onFrame: applyFrame,
+  onStatus: (state, detail) => {
+    setStatus(state, detail);
+    el.usbBtn.textContent =
+      state === "conectado"
+        ? "Desconectar USB"
+        : state === "reconectando"
+          ? "Cancelar reconexión"
+          : state === "perdido"
+            ? "Reconectar USB"
+            : "Conectar por USB";
+  },
+});
+
+if (!SerialBridgeClient.supported) {
+  el.usbBtn.disabled = true;
+  el.usbHint.textContent =
+    "Tu navegador no soporta Web Serial (solo Chrome/Edge, abriendo la app desde http://localhost o https). Usa el modo WiFi.";
+}
+
+function frameLengthForParams() {
+  if (!loadedParams.length) return 16;
+  return Math.max(...loadedParams.map((p) => p.byteIndex + p.byteLength)) + 1;
+}
+
+// Los tres orígenes de datos (WiFi, USB, simulado) se excluyen entre sí: al
+// arrancar uno se detienen los otros. El disconnect() del USB se espera antes
+// de arrancar el siguiente para que su status "desconectado" no pise al nuevo.
+el.connectBtn.addEventListener("click", async () => {
+  sim.stop();
+  el.simBtn.textContent = "Modo simulado";
+  await serialBridge.disconnect();
+  const host = el.hostInput.value.trim() || "192.168.4.1";
+  bridge.connect(host);
+});
+
+el.usbBtn.addEventListener("click", async () => {
+  if (serialBridge.connected || serialBridge.reconnecting) {
+    await serialBridge.disconnect(); // conectado: corta. reintentando: cancela el reintento (no abre el diálogo de puerto de nuevo).
+    return;
+  }
+  sim.stop();
+  bridge.disconnect();
+  el.simBtn.textContent = "Modo simulado";
+  await serialBridge.connect(); // sin ningún await antes: requestPort() necesita el gesto del click
+});
+
+el.simBtn.addEventListener("click", async () => {
+  if (sim.running) {
+    sim.stop();
+    el.simBtn.textContent = "Modo simulado";
+    setStatus("sin conectar");
+  } else {
+    bridge.disconnect();
+    await serialBridge.disconnect();
+    sim.start(frameLengthForParams());
+    el.simBtn.textContent = "Detener simulado";
+    setStatus("simulado");
+  }
+});
+
+el.fileInput.addEventListener("change", async (evt) => {
+  const file = evt.target.files[0];
+  if (!file) return;
+  const text = await file.text();
+  const format = detectFormat(text);
+
+  try {
+    if (format === "xdf") {
+      // Aditivo a propósito: no borra loadedParams. Así puedes cargar un
+      // .xdf (tablas) y un .adx (parámetros en vivo) juntos y ver el
+      // resaltado de "posición actual" sobre la tabla (overlay en vivo).
+      const xdf = parseXDF(text);
+      loadedTables = xdf.tables;
+      loadedXdf = xdf;
+      axisOverrides = {}; // los índices de tabla cambiaron, cualquier override viejo ya no aplica
+      closeSurface3D(); // la vista 3D abierta (si había) apuntaba a un índice de tabla que ya no aplica
+      rerenderCurrentView();
+    } else if (format === "adx") {
+      await persistCurrentSession(); // guarda lo que quedó pendiente de la sesión anterior antes de reiniciar
+      loadedParams = parseADX(text).parameters;
+      paramHistory = {};
+      paramHistoryTimes = {};
+      paramMeta = {};
+      sessionLog = [];
+      updateLogCount();
+      startNewSession();
+      if (sim.running) sim.start(frameLengthForParams());
+      renderMain();
+    } else {
+      alert("No reconozco el formato del archivo (¿es un .xdf o .adx válido?)");
+    }
+  } catch (err) {
+    alert("Error al parsear: " + err.message);
+    console.error(err);
+  }
+});
+
+/** Vuelve a dibujar la vista activa (el .xdf y el .bin también alimentan la simulación del replay). */
+function rerenderCurrentView() {
+  if (viewMode === "replay") renderReplay();
+  else if (viewMode === "bindiff") renderBinDiff();
+  else renderMain();
+}
+
+el.binInput.addEventListener("change", async (evt) => {
+  const file = evt.target.files[0];
+  if (!file) return;
+  try {
+    loadedBin = new Uint8Array(await file.arrayBuffer());
+    loadedBinName = file.name;
+    rerenderCurrentView();
+  } catch (err) {
+    alert("Error al leer el binario: " + err.message);
+    console.error(err);
+  }
+});
+
+// --- Overlay: resaltar en la tabla el punto de operación actual -------------
+// La feature "estrella" original de TunerPro RT: mientras el motor corre (en
+// vivo o en modo simulado), ¿en qué celda de esta tabla está operando ahora
+// mismo el motor? Emparejamos cada eje (por su título, ej. "RPM") con un
+// parámetro del .adx cargado por nombre (auto-match), o el usuario lo elige
+// a mano si el auto-match falla o adivina mal.
+
+/** Quita acentos/puntuación y normaliza a minúsculas para comparar nombres de forma tolerante. */
+function normalizeLabel(s) {
+  return (s || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/** Busca el parámetro en vivo cuyo nombre se parece más al título de un eje. null si no hay nada razonable. */
+function matchParamForAxisLabel(label) {
+  const norm = normalizeLabel(label);
+  if (!norm || !loadedParams.length) return null;
+
+  const normWords = norm.split(" ").filter(Boolean);
+  let best = null;
+  let bestScore = 0;
+  loadedParams.forEach((p) => {
+    if (p.isFlag) return; // un booleano no sirve de eje de tabla (RPM, MAP...)
+    const pNorm = normalizeLabel(p.name);
+    if (!pNorm) return;
+    let score = 0;
+    if (pNorm === norm) score = 100;
+    else if (pNorm.includes(norm) || norm.includes(pNorm)) score = 60;
+    else {
+      const pWords = new Set(pNorm.split(" ").filter(Boolean));
+      const overlap = normWords.filter((w) => pWords.has(w)).length;
+      if (overlap) score = 20 + overlap * 10;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = p;
+    }
+  });
+  return bestScore >= 20 ? best : null;
+}
+
+/** Elección final de parámetro para un eje: lo que el usuario eligió a mano, si lo hizo; si no, el auto-match. */
+function resolveAxisParam(tableIdx, axis, autoMatch) {
+  const overrideId = axisOverrides[`${tableIdx}:${axis}`];
+  if (!overrideId) return autoMatch;
+  return loadedParams.find((p) => p.id === overrideId) || autoMatch;
+}
+
+/** Índice del breakpoint más cercano a `value` en un eje (array de números reales, ej. RPM). -1 si no aplica. */
+function nearestIndex(breakpoints, value) {
+  if (!breakpoints || !breakpoints.length || value === undefined || value === null || Number.isNaN(value)) return -1;
+  let bestI = -1;
+  let bestD = Infinity;
+  breakpoints.forEach((b, i) => {
+    const d = Math.abs(b - value);
+    if (d < bestD) {
+      bestD = d;
+      bestI = i;
+    }
+  });
+  return bestI;
+}
+
+/**
+ * Todo lo que depende de los valores en vivo para una tabla: qué parámetro
+ * quedó emparejado a cada eje, el valor actual, la celda activa y el texto
+ * del hint. Se usa tanto para el HTML inicial (buildTablesHtml) como para
+ * el refresco en caliente en cada frame (updateTableHighlights) - ese
+ * segundo camino NO reconstruye el HTML (ver el porqué en updateTableHighlights).
+ */
+function computeTablePosition(t, idx) {
+  const xParam = resolveAxisParam(idx, "x", matchParamForAxisLabel(t.xLabel));
+  const yParam = resolveAxisParam(idx, "y", matchParamForAxisLabel(t.yLabel));
+
+  const xVal = xParam ? currentValues[xParam.id] : undefined;
+  const yVal = yParam ? currentValues[yParam.id] : undefined;
+  const activeCol = xVal !== undefined ? nearestIndex(t.xAxis, xVal) : -1;
+  const activeRow = yVal !== undefined ? nearestIndex(t.yAxis, yVal) : -1;
+
+  const hint =
+    xParam && yParam && xVal !== undefined && yVal !== undefined
+      ? `Posición actual: ${t.xLabel} = ${xVal.toFixed(2)} ${xParam.units} (columna ${activeCol + 1}) · ${t.yLabel} = ${yVal.toFixed(2)} ${yParam.units} (fila ${activeRow + 1})`
+      : `Sin datos en vivo para resaltar esta tabla todavía — elige el parámetro de cada eje abajo, o carga un .adx con nombres parecidos a "${t.xLabel}" / "${t.yLabel}".`;
+
+  return { xParam, yParam, xVal, yVal, activeRow, activeCol, hint };
+}
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+}
+
+/** "OK" / "MAL" del checksum que declara el .xdf, para un bin dado. "" si no aplica. */
+function xdfChecksumText(bin) {
+  const cs = loadedXdf.checksum;
+  if (!cs || !bin) return "";
+  const r = cs.verify(bin);
+  if (!r.supported) return "método de checksum del .xdf no soportado";
+  if (r.ok === null) return "el bin es más chico que el rango del checksum";
+  return r.ok
+    ? `checksum OK (0x${hexPad(r.stored, 4)})`
+    : `checksum MAL: guardado 0x${hexPad(r.stored, 4)}, calculado 0x${hexPad(r.computed, 4)}`;
+}
+
+/**
+ * Constantes y banderas del .xdf (solo las trae el XDF de texto viejo, p. ej.
+ * el 4E.xdf del 1228062), agrupadas por el encabezado de grupo del archivo.
+ * Cada grupo va en un <details> cerrado para que 100+ filas no tapen las tablas.
+ */
+function buildXdfExtrasHtml() {
+  const h = loadedXdf.header || {};
+  const groups = new Map();
+  const add = (item, kind) => {
+    const g = item.group || "Sin grupo";
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push({ item, kind });
+  };
+  loadedXdf.constants.forEach((c) => add(c, "const"));
+  loadedXdf.flags.forEach((f) => add(f, "flag"));
+
+  const rowHtml = ({ item, kind }) => {
+    const flagBits = kind !== "flag" ? "" : item.bit != null ? ` bit ${item.bit}` : ` máscara 0x${hexPad(item.mask)}`;
+    const addr = `0x${hexPad(item.address, 4)}${flagBits}`;
+    let val = `<span class="cell-empty">sin .bin</span>`;
+    if (loadedBin) {
+      if (kind === "flag") {
+        const v = item.value(loadedBin);
+        val = v === null ? "-" : v ? "Sí (1)" : "No (0)";
+      } else {
+        const v = item.value(loadedBin);
+        const raw = item.readRaw(loadedBin);
+        val = v === null ? "-" : `${Number.isInteger(v) ? v : v.toFixed(2)} ${esc(item.units)} <span style="color:var(--text-dim);">(crudo ${raw})</span>`;
+      }
+    }
+    return `<tr title="${esc(item.desc)}"><td style="text-align:left;">${esc(item.name)}${item.desc ? " ⓘ" : ""}</td><td>${addr}</td><td style="text-align:left;">${val}</td></tr>`;
+  };
+
+  const groupsHtml = [...groups.entries()]
+    .map(
+      ([g, items]) => `
+      <details class="xdf-group">
+        <summary>${esc(g)} <span style="color:var(--text-dim);">(${items.length})</span></summary>
+        <table class="data-table">
+          <thead><tr><th style="text-align:left;">Nombre</th><th>Dirección</th><th style="text-align:left;">Valor</th></tr></thead>
+          <tbody>${items.map(rowHtml).join("")}</tbody>
+        </table>
+      </details>`
+    )
+    .join("");
+
+  const csText = xdfChecksumText(loadedBin);
+  return `
+    <div class="table-block">
+      <h3>Constantes y banderas del .xdf ${h.title ? `<span style="color:var(--text-dim);font-size:12px;">(${esc(h.title)}${h.author ? ", " + esc(h.author) : ""})</span>` : ""}</h3>
+      ${csText ? `<div class="table-position-hint">${csText}</div>` : ""}
+      ${h.warning ? `<div class="hint">Ojo: ${esc(h.warning)}</div>` : ""}
+      ${!loadedBin ? `<div class="hint">Carga el .bin para ver los valores.</div>` : ""}
+      ${groupsHtml}
+    </div>
+  `;
+}
+
+function buildTablesHtml() {
+  return loadedTables
+    .map((t, idx) => {
+      const { activeRow, activeCol, hint } = computeTablePosition(t, idx);
+
+      const paramOptionsHtml = (selectedId) =>
+        `<option value="">(auto)</option>` +
+        loadedParams
+          .filter((p) => !p.isFlag) // las banderas no se ofrecen como eje: no son magnitudes
+          .map((p) => `<option value="${p.id}"${p.id === selectedId ? " selected" : ""}>${p.name}</option>`)
+          .join("");
+
+      const xText = t.xAxisText || t.xAxis; // el XDF XML puede traer etiquetas de texto ("1 -> 2")
+      const yText = t.yAxisText || t.yAxis;
+      const headerRow = `<tr><th></th>${xText.map((v) => `<th>${esc(v)}</th>`).join("")}</tr>`;
+
+      let bodyRows = "";
+      for (let r = 0; r < t.rows; r++) {
+        bodyRows += `<tr><th>${esc(yText[r])}</th>`;
+        for (let c = 0; c < t.cols; c++) {
+          const val = t.valueAt(r, c, loadedBin);
+          const cell = t.cells[r * t.cols + c];
+          const display = val !== null ? val.toFixed(1) : cell ? `<span class="cell-empty">off ${cell.offset}</span>` : "-";
+          const classes = ["td-cell"];
+          if (r === activeRow && c === activeCol) classes.push("active-cell");
+          else if (r === activeRow) classes.push("active-row");
+          else if (c === activeCol) classes.push("active-col");
+          bodyRows += `<td class="${classes.join(" ")}">${display}</td>`;
+        }
+        bodyRows += "</tr>";
+      }
+
+      return `
+        <div class="table-block" data-table-idx="${idx}">
+          <h3>${t.group ? `<span style="color:var(--text-dim);font-size:12px;">${esc(t.group)} ·</span> ` : ""}${esc(t.name)} <span style="color:var(--text-dim);font-size:12px;">(${esc(t.units) || "sin unidad"})</span></h3>
+          <div class="table-position-hint">${hint}</div>
+          <div class="axis-match-controls">
+            <label>Eje X (${t.xLabel}):
+              <select class="axis-select" data-table-idx="${idx}" data-axis="x">${paramOptionsHtml(axisOverrides[`${idx}:x`] || "")}</select>
+            </label>
+            <label>Eje Y (${t.yLabel}):
+              <select class="axis-select" data-table-idx="${idx}" data-axis="y">${paramOptionsHtml(axisOverrides[`${idx}:y`] || "")}</select>
+            </label>
+            <button type="button" class="view-3d-btn" data-table-idx="${idx}">Ver en 3D</button>
+          </div>
+          <table class="data-table"><thead>${headerRow}</thead><tbody>${bodyRows}</tbody></table>
+          ${!loadedBin ? `<div class="hint">Sin binario (.bin) cargado — mostrando offsets, no valores reales de calibración.</div>` : ""}
+        </div>
+      `;
+    })
+    .join("");
+}
+
+/**
+ * Refresca el resaltado de "posición actual" en cada tabla YA presente en
+ * el DOM, sin tocar el HTML de la tabla (headers, celdas, <select> de eje).
+ * Existe para arreglar un bug real: renderMain() reconstruía toda la
+ * sección de tablas en cada frame en vivo (cada ~200ms en modo simulado),
+ * lo que recreaba los <select> de eje - y un <select> nativo se cierra solo
+ * en cuanto el elemento que lo contiene se destruye, así que era imposible
+ * alcanzar a elegir una opción. Esta función solo toca el texto del hint y
+ * las clases de celda activa, dejando los <select> intactos entre frames.
+ */
+function updateTableHighlights() {
+  loadedTables.forEach((t, idx) => {
+    const block = document.querySelector(`#tables-section .table-block[data-table-idx="${idx}"]`);
+    if (!block) return;
+
+    const { activeRow, activeCol, hint } = computeTablePosition(t, idx);
+
+    const hintEl = block.querySelector(".table-position-hint");
+    if (hintEl) hintEl.textContent = hint;
+
+    block.querySelectorAll("td.active-cell, td.active-row, td.active-col").forEach((td) => {
+      td.classList.remove("active-cell", "active-row", "active-col");
+    });
+    block.querySelectorAll("table.data-table tbody tr").forEach((tr, r) => {
+      tr.querySelectorAll("td.td-cell").forEach((td, c) => {
+        if (r === activeRow && c === activeCol) td.classList.add("active-cell");
+        else if (r === activeRow) td.classList.add("active-row");
+        else if (c === activeCol) td.classList.add("active-col");
+      });
+    });
+  });
+}
+
+/** Evalúa alertas de rango y "valor congelado" para un parámetro. Devuelve { outOfRange, isStuck, stuckSec }. */
+function evaluateAlerts(p, value, now) {
+  // Una bandera no tiene "rango": su alerta es estar en el estado que el .adx
+  // marcó con alertif (ej. lazo abierto, o un código de falla presente). Y la
+  // alerta de "congelado" no aplica: un booleano estable es lo normal.
+  if (p.isFlag) {
+    const outOfRange = value !== undefined && p.alertIf !== null && !!value === p.alertIf;
+    return { outOfRange, isStuck: false, stuckSec: 0 };
+  }
+
+  const outOfRange = value !== undefined && ((p.warnMin != null && value < p.warnMin) || (p.warnMax != null && value > p.warnMax));
+
+  let isStuck = false;
+  let stuckSec = 0;
+  if (p.flatAlert) {
+    const meta = paramMeta[p.id];
+    const hist = paramHistory[p.id];
+    if (meta && hist && hist.length >= 5) {
+      const elapsed = now - meta.lastChangeTs;
+      if (elapsed >= STUCK_ALERT_MS) {
+        isStuck = true;
+        stuckSec = Math.round(elapsed / 1000);
+      }
+    }
+  }
+
+  return { outOfRange, isStuck, stuckSec };
+}
+
+function buildLiveHtml() {
+  const now = Date.now();
+  const expanded = loadedParams.find((p) => p.id === expandedParamId);
+  const alerts = [];
+
+  const cardsHtml = loadedParams
+    .map((p) => {
+      const v = currentValues[p.id];
+      const isExpanded = p.id === expandedParamId;
+      const { outOfRange, isStuck, stuckSec } = evaluateAlerts(p, v, now);
+
+      if (outOfRange) {
+        alerts.push({
+          type: "range",
+          text: p.isFlag
+            ? `${p.name}: ${p.format(v)}`
+            : `${p.name}: ${v.toFixed(2)} ${p.units} fuera del rango esperado (${p.warnMin ?? "-∞"} a ${p.warnMax ?? "∞"})`,
+        });
+      }
+      if (isStuck) alerts.push({ type: "stuck", text: `${p.name}: sin cambios hace ${stuckSec}s (valor congelado en ${v.toFixed(2)} ${p.units})` });
+
+      const cardClasses = ["param-card"];
+      if (isExpanded) cardClasses.push("active");
+      if (p.isFlag) cardClasses.push("flag-card");
+      if (outOfRange) cardClasses.push("warn-range");
+      if (isStuck) cardClasses.push("warn-stuck");
+
+      const badges = [
+        outOfRange && !p.isFlag ? `<span class="card-badge range">rango</span>` : "",
+        isStuck ? `<span class="card-badge stuck">congelado</span>` : "",
+      ].join("");
+
+      // Una bandera no tiene unidades ni curva que valga la pena: se muestra
+      // la etiqueta (CERRADO/ABIERTO) en grande y una franja de historia que
+      // deja ver cuánto tiempo lleva en cada estado.
+      const valueHtml = p.isFlag
+        ? `<div class="value flag-value ${v ? "on" : "off"}">${p.format(v)}</div>`
+        : `<div class="value">${v !== undefined ? v.toFixed(2) : "--"}<span class="units">${p.units}</span></div>`;
+
+      return `
+        <div class="${cardClasses.join(" ")}" data-param-id="${p.id}">
+          <div class="name">${p.name}${badges}</div>
+          ${valueHtml}
+          <canvas class="sparkline" width="300" height="48"></canvas>
+        </div>
+      `;
+    })
+    .join("");
+
+  if (lastFrameProto === "8192") {
+    alerts.unshift({
+      type: "range",
+      text: `El ESP8266 está leyendo en modo 8192 baud, no 160 - estos valores son bytes crudos sin decodificar de verdad (el .adx cargado asume 160 baud). Probablemente el ECU conectado no es el Sonoma A040.`,
+    });
+  }
+
+  updateAlertBanner(alerts);
+
+  return `
+    <h3>Parámetros en vivo <span style="color:var(--text-dim);font-size:12px;font-weight:400;">(clic en una tarjeta para ampliar su gráfica)</span></h3>
+    ${
+      expanded
+        ? `
+      <div class="chart-expanded">
+        <div class="chart-expanded-header">
+          <span>${expanded.name} <span class="units">${expanded.units}</span></span>
+          <button class="close-chart" type="button">Cerrar ✕</button>
+        </div>
+        <canvas class="sparkline-big" width="900" height="220"></canvas>
+      </div>
+    `
+        : ""
+    }
+    <div class="param-list">
+      ${cardsHtml}
+    </div>
+  `;
+}
+
+function wireLiveSection() {
+  loadedParams.forEach((p) => {
+    const canvas = el.main.querySelector(`.param-card[data-param-id="${CSS.escape(p.id)}"] canvas.sparkline`);
+    drawChart(canvas, paramHistory[p.id]);
+  });
+
+  const expanded = loadedParams.find((p) => p.id === expandedParamId);
+  if (expanded) {
+    const bigCanvas = el.main.querySelector("canvas.sparkline-big");
+    drawChart(bigCanvas, paramHistory[expanded.id], { showLabels: true });
+    el.main.querySelector(".close-chart").addEventListener("click", (e) => {
+      e.stopPropagation();
+      expandedParamId = null;
+      renderMain();
+    });
+  }
+}
+
+/**
+ * Render ESTRUCTURAL para las vistas "en vivo"/"tablas" (todo lo que no sea
+ * replay, que tiene su propio renderReplay()). Reconstruye el HTML entero -
+ * úsalo solo cuando cambia la estructura (se carga un .xdf/.adx/.bin, se
+ * cambia un override de eje, se expande/colapsa una gráfica), NUNCA por
+ * cada frame en vivo: reconstruir la sección de tablas en cada frame
+ * destruye los <select> de eje a medio uso (ver updateTableHighlights).
+ * Para refrescar solo los valores en vivo, usa refreshLiveFrame().
+ */
+function renderMain() {
+  const hasXdfExtras = loadedXdf.constants.length || loadedXdf.flags.length;
+  if (!loadedTables.length && !loadedParams.length && !hasXdfExtras) {
+    el.main.innerHTML = `<div class="empty-state">Carga una definición para empezar.</div>`;
+    updateAlertBanner([]);
+    return;
+  }
+
+  const tablesHtml = (hasXdfExtras ? buildXdfExtrasHtml() : "") + (loadedTables.length ? buildTablesHtml() : "");
+  const liveHtml = loadedParams.length ? buildLiveHtml() : "";
+  el.main.innerHTML =
+    (tablesHtml ? `<div id="tables-section">${tablesHtml}</div>` : "") +
+    (tablesHtml && liveHtml ? `<hr class="section-divider" />` : "") +
+    (liveHtml ? `<div id="live-section">${liveHtml}</div>` : "");
+
+  if (loadedParams.length) wireLiveSection();
+  else updateAlertBanner([]);
+
+  updateSurface3dLivePosition();
+}
+
+/**
+ * Refresco "en caliente" para cada frame en vivo (sim o ESP8266 real): NO
+ * toca la sección de tablas más que sus clases de celda activa + el texto
+ * del hint (updateTableHighlights) - los <select> de eje quedan intactos.
+ * La sección de tarjetas en vivo sí se reconstruye entera (no tiene
+ * controles de formulario nativos que se puedan cerrar solos), para que
+ * valores/gráficas/alertas se vean al segundo.
+ */
+function refreshLiveFrame() {
+  const liveSection = document.getElementById("live-section");
+  if (loadedParams.length && liveSection) {
+    liveSection.innerHTML = buildLiveHtml();
+    wireLiveSection();
+  } else if (!loadedParams.length) {
+    updateAlertBanner([]);
+  }
+
+  if (loadedTables.length) updateTableHighlights();
+  updateSurface3dLivePosition();
+}
+
+// --- Banner de alertas flotante ---------------------------------------------
+// Vive fuera del innerHTML de el.main (igual que el tooltip) para que
+// aparecer/desaparecer o cambiar de tamaño NUNCA empuje el resto del
+// contenido - antes estaba insertado arriba de la lista de tarjetas y cada
+// vez que un parámetro entraba/salía de alerta todo el body saltaba.
+
+const alertBannerEl = document.createElement("div");
+alertBannerEl.id = "alert-banner";
+alertBannerEl.hidden = true;
+document.body.appendChild(alertBannerEl);
+
+function updateAlertBanner(alerts) {
+  if (!alerts.length) {
+    alertBannerEl.hidden = true;
+    alertBannerEl.innerHTML = "";
+    return;
+  }
+  alertBannerEl.innerHTML = alerts.map((a) => `<div class="alert-row ${a.type}">⚠ ${a.text}</div>`).join("");
+  alertBannerEl.hidden = false;
+}
+
+// --- Tooltip al pasar el cursor sobre una gráfica ---------------------------
+
+const tooltipEl = document.createElement("div");
+tooltipEl.id = "chart-tooltip";
+tooltipEl.hidden = true;
+document.body.appendChild(tooltipEl);
+
+/** x del mouse como fracción 0..1 del ancho CSS del canvas, o null si no aplica. */
+function fracXFromEvent(canvas, evt) {
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width) return null;
+  return Math.max(0, Math.min(1, (evt.clientX - rect.left) / rect.width));
+}
+
+/**
+ * rows: [{ label, value, units, t (ms epoch, opcional), color, text }]
+ * `text` gana sobre `value` cuando el valor no se lee como número - es lo que
+ * usan las banderas de 1 bit para decir "Cerrado" en vez de "1.00".
+ */
+function showTooltip(clientX, clientY, rows) {
+  tooltipEl.innerHTML = rows
+    .map((r) => {
+      const valStr = r.text
+        ? r.text
+        : r.value !== undefined && !Number.isNaN(r.value) ? `${r.value.toFixed(2)} ${r.units || ""}`.trim() : "sin dato";
+      const timeStr = r.t ? `<span class="tt-time">${new Date(r.t).toLocaleTimeString()}</span>` : "";
+      return `<div class="row"><span class="dot" style="background:${r.color}"></span><span class="tt-label">${r.label}:</span> <b>${valStr}</b> ${timeStr}</div>`;
+    })
+    .join("");
+  tooltipEl.hidden = false;
+  positionTooltip(clientX, clientY);
+}
+
+function positionTooltip(clientX, clientY) {
+  const offset = 14;
+  tooltipEl.style.left = "0px";
+  tooltipEl.style.top = "0px";
+  const rect = tooltipEl.getBoundingClientRect();
+  let x = clientX + offset;
+  let y = clientY + offset;
+  if (x + rect.width > window.innerWidth) x = clientX - rect.width - offset;
+  if (y + rect.height > window.innerHeight) y = clientY - rect.height - offset;
+  tooltipEl.style.left = `${x}px`;
+  tooltipEl.style.top = `${y}px`;
+}
+
+function hideTooltip() {
+  tooltipEl.hidden = true;
+}
+
+// --- Vista 3D de una tabla (superficie, al estilo TunerPro RT) -------------
+// Vive fuera del innerHTML de el.main (mismo motivo que el tooltip/banner):
+// renderMain() reemplaza ese HTML en cada frame en vivo, y una escena
+// WebGL no se puede reconstruir desde cero cada vez sin perder la cámara y
+// sin gastar recursos de más - así que el panel + la instancia de Three.js
+// sobreviven a los re-renders, y solo actualizamos la posición del
+// marcador en updateSurface3dLivePosition().
+
+const surface3dPanelEl = document.createElement("div");
+surface3dPanelEl.id = "surface3d-panel";
+surface3dPanelEl.hidden = true;
+surface3dPanelEl.innerHTML = `
+  <div class="surface3d-card">
+    <div class="surface3d-header">
+      <span id="surface3d-title"></span>
+      <button id="surface3d-close" type="button" class="close-chart">Cerrar ✕</button>
+    </div>
+    <div class="hint" id="surface3d-hint"></div>
+    <canvas id="surface3d-canvas"></canvas>
+  </div>
+`;
+document.body.appendChild(surface3dPanelEl);
+
+let open3dTableIdx = null; // índice en loadedTables de la tabla mostrada en 3D, o null si el panel está cerrado
+let surface3dInstance = null; // { updateLivePosition, resize, dispose } de surface3d.js, o null
+let surface3dModulePromise = null; // cachea el import() dinámico - solo se descarga Three.js una vez por sesión
+
+function loadSurface3DModule() {
+  if (!surface3dModulePromise) surface3dModulePromise = import("./surface3d.js");
+  return surface3dModulePromise;
+}
+
+function closeSurface3D() {
+  if (surface3dInstance) {
+    surface3dInstance.dispose();
+    surface3dInstance = null;
+  }
+  open3dTableIdx = null;
+  surface3dPanelEl.hidden = true;
+}
+
+async function openSurface3D(idx) {
+  const table = loadedTables[idx];
+  if (!table) return;
+  if (surface3dInstance) {
+    surface3dInstance.dispose();
+    surface3dInstance = null;
+  }
+
+  open3dTableIdx = idx;
+  surface3dPanelEl.hidden = false;
+  document.getElementById("surface3d-title").textContent = `Vista 3D: ${table.name}`;
+  document.getElementById("surface3d-hint").textContent = "Cargando Three.js...";
+
+  const { createSurface3D } = await loadSurface3DModule();
+  if (open3dTableIdx !== idx) return; // se cerró o se cambió de tabla mientras cargaba
+
+  document.getElementById("surface3d-hint").textContent = loadedBin
+    ? "Arrastra para rotar, rueda del mouse para acercar/alejar."
+    : "Sin binario (.bin) cargado - mostrando la estructura de la tabla en plano. Arrastra para rotar, rueda para zoom.";
+
+  const canvas = document.getElementById("surface3d-canvas");
+  surface3dInstance = createSurface3D(canvas, table, loadedBin);
+  updateSurface3dLivePosition();
+}
+
+document.getElementById("surface3d-close").addEventListener("click", closeSurface3D);
+
+/** Mueve el marcador de posición actual dentro de la vista 3D abierta, reusando el mismo emparejamiento de ejes que el overlay 2D. */
+function updateSurface3dLivePosition() {
+  if (open3dTableIdx == null || !surface3dInstance) return;
+  const table = loadedTables[open3dTableIdx];
+  if (!table) return;
+
+  const { xVal, yVal } = computeTablePosition(table, open3dTableIdx);
+  surface3dInstance.updateLivePosition(xVal, yVal);
+}
+
+// --- Utilidades de gráfica compartidas (vivo + replay) ---------------------
+
+/**
+ * Ajusta el buffer de píxeles del canvas al tamaño real en pantalla (CSS)
+ * multiplicado por devicePixelRatio, y escala el contexto para poder seguir
+ * dibujando en coordenadas CSS. Sin esto, un canvas con width/height fijos
+ * en el HTML se ve borroso/pixelado al estirarlo con CSS a un tamaño mayor
+ * (que es justo lo que pasaba: 900x180 estirado a ~1900px de ancho real).
+ */
+function fitCanvasToDisplay(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const w = rect.width || canvas.clientWidth || canvas.width;
+  const h = rect.height || canvas.clientHeight || canvas.height;
+  const targetW = Math.max(1, Math.round(w * dpr));
+  const targetH = Math.max(1, Math.round(h * dpr));
+  if (canvas.width !== targetW || canvas.height !== targetH) {
+    canvas.width = targetW;
+    canvas.height = targetH;
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, w, h };
+}
+
+/**
+ * Rango para el eje Y que ignora el 2% más extremo de los valores a cada
+ * lado, en vez de min/max puro. Un solo frame corrupto (ej. el "salto" a
+ * 2000 RPM que es ruido de sincronización, no el motor real) ya no aplasta
+ * el resto de la gráfica a una franja delgada - los picos fuera de rango
+ * simplemente se recortan visualmente contra el borde.
+ */
+function robustRange(values) {
+  if (values.length < 8) {
+    return { min: Math.min(...values), max: Math.max(...values) };
+  }
+  const sorted = [...values].sort((a, b) => a - b);
+  const at = (p) => {
+    const idx = (sorted.length - 1) * p;
+    const lo = Math.floor(idx);
+    const hi = Math.ceil(idx);
+    return lo === hi ? sorted[lo] : sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
+  };
+  const p2 = at(0.02);
+  const p98 = at(0.98);
+  if (p98 - p2 < 1e-9) return { min: sorted[0], max: sorted[sorted.length - 1] };
+  return { min: p2, max: p98 };
+}
+
+function drawChart(canvas, hist, { showLabels = false, hoverFrac = null } = {}) {
+  if (!canvas || !hist || hist.length < 2) return;
+
+  const { ctx, w, h } = fitCanvasToDisplay(canvas);
+  ctx.clearRect(0, 0, w, h);
+
+  const { min, max } = robustRange(hist);
+  const range = max - min || 1;
+  const padTop = showLabels ? 20 : 3;
+  const padBottom = showLabels ? 20 : 3;
+
+  if (showLabels) {
+    ctx.strokeStyle = "#2a2f34";
+    ctx.lineWidth = 1;
+    [0, 0.5, 1].forEach((f) => {
+      const y = padTop + f * (h - padTop - padBottom);
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+      ctx.stroke();
+    });
+
+    ctx.fillStyle = "#8b939a";
+    ctx.font = "12px -apple-system, sans-serif";
+    ctx.textBaseline = "middle";
+    ctx.fillText(`max ${max.toFixed(2)}`, 6, padTop);
+    ctx.fillText(`min ${min.toFixed(2)}`, 6, h - padBottom);
+  }
+
+  const plotY = (v) => {
+    const y = h - padBottom - ((v - min) / range) * (h - padTop - padBottom);
+    return Math.max(padTop, Math.min(h - padBottom, y));
+  };
+
+  ctx.beginPath();
+  hist.forEach((v, i) => {
+    const x = (i / (hist.length - 1)) * w;
+    const y = plotY(v);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = "#5fb3a3";
+  ctx.lineWidth = showLabels ? 2 : 1.5;
+  ctx.stroke();
+
+  if (hoverFrac != null) {
+    const idx = Math.round(hoverFrac * (hist.length - 1));
+    const x = (idx / (hist.length - 1)) * w;
+    const y = plotY(hist[idx]);
+    ctx.strokeStyle = "#8b939a";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, padTop);
+    ctx.lineTo(x, h - padBottom);
+    ctx.stroke();
+    ctx.fillStyle = "#5fb3a3";
+    ctx.beginPath();
+    ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+// --- Accesorios encendidos (checkboxes) -----------------------------------
+// Mientras un check esté marcado, su etiqueta se escribe en la columna
+// "evento" de CADA fila registrada (separadas por coma), no solo una vez.
+
+function currentEventoText(autoAlertLabels = []) {
+  const list = [...activeFlags, ...autoAlertLabels];
+  if (otherFlagText.trim()) list.push(otherFlagText.trim());
+  return list.join(", ");
+}
+
+function updateMarkerStatus() {
+  if (!el.markerStatus) return;
+  const text = currentEventoText();
+  el.markerStatus.textContent = text ? `Marcando en el log: ${text}` : "Nada marcado como encendido.";
+}
+
+document.querySelectorAll(".checklist input[type='checkbox']").forEach((cb) => {
+  cb.addEventListener("change", () => {
+    if (cb.checked) activeFlags.add(cb.dataset.flag);
+    else activeFlags.delete(cb.dataset.flag);
+    updateMarkerStatus();
+  });
+});
+
+el.markerOther.addEventListener("input", () => {
+  otherFlagText = el.markerOther.value;
+  updateMarkerStatus();
+});
+
+updateMarkerStatus();
+
+// --- Replay / comparación de logs CSV -------------------------------------
+
+function splitCsvLine(line) {
+  const out = [];
+  let cur = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (line[i + 1] === '"') {
+          cur += '"';
+          i++;
+        } else inQuotes = false;
+      } else cur += c;
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ",") {
+      out.push(cur);
+      cur = "";
+    } else {
+      cur += c;
+    }
+  }
+  out.push(cur);
+  return out;
+}
+
+function parseCsvLog(text, filename) {
+  const lines = text.split(/\r?\n/).filter((l) => l.length);
+  if (lines.length < 2) throw new Error("El CSV está vacío o no tiene filas de datos.");
+
+  const headerCells = splitCsvLine(lines[0]);
+  const columns = [];
+  let suspectIdx = -1;
+  headerCells.forEach((h, idx) => {
+    if (idx === 0) return; // timestamp_iso
+    if (/^sospechoso$/i.test(h)) {
+      suspectIdx = idx;
+      return;
+    }
+    if (/^evento$/i.test(h) || /^fuera_de_rango$/i.test(h) || /^raw_frame$/i.test(h)) return;
+    const m = h.match(/^(.*)\s\((.*)\)$/);
+    columns.push({ idx, key: m ? m[1] : h, units: m ? m[2] : "" });
+  });
+
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cells = splitCsvLine(lines[i]);
+    const t = Date.parse(cells[0]);
+    const values = {};
+    columns.forEach((c) => {
+      const raw = cells[c.idx];
+      if (raw !== undefined && raw !== "") values[c.key] = parseFloat(raw);
+    });
+    rows.push({ t, values, sospechoso: suspectIdx >= 0 ? cells[suspectIdx] || "" : undefined });
+  }
+
+  return dropSuspectRows({ name: filename, columns, rows });
+}
+
+/**
+ * Saca del replay los frames sospechosos. Si el log ya trae la marca (CSV
+ * nuevo o sesión guardada) se usa esa; si es un CSV viejo sin la columna, se
+ * calcula con las reglas del .adx cargado, emparejando por nombre de columna.
+ * Sin .adx cargado, un CSV viejo se deja tal cual.
+ */
+function dropSuspectRows(log) {
+  const hasMarks = log.rows.some((r) => r.sospechoso !== undefined);
+  const marks = hasMarks
+    ? log.rows.map((r) => r.sospechoso || "")
+    : loadedParams.length
+      ? checkFrames(loadedParams, log.rows.map((r) => r.values), (p) => p.name)
+      : log.rows.map(() => "");
+  const excluded = marks.filter(Boolean).length;
+  return { ...log, rows: log.rows.filter((_, i) => !marks[i]), excluded };
+}
+
+function drawOverlayChart(canvas, seriesA, seriesB, { hoverFrac = null } = {}) {
+  if (!canvas || seriesA.length < 2) return;
+  const { ctx, w, h } = fitCanvasToDisplay(canvas);
+  ctx.clearRect(0, 0, w, h);
+
+  const all = seriesB && seriesB.length ? seriesA.concat(seriesB) : seriesA;
+  const { min, max } = robustRange(all);
+  const range = max - min || 1;
+  const padTop = 20;
+  const padBottom = 20;
+
+  ctx.strokeStyle = "#2a2f34";
+  ctx.lineWidth = 1;
+  [0, 0.5, 1].forEach((f) => {
+    const y = padTop + f * (h - padTop - padBottom);
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(w, y);
+    ctx.stroke();
+  });
+  ctx.fillStyle = "#8b939a";
+  ctx.font = "12px -apple-system, sans-serif";
+  ctx.textBaseline = "middle";
+  ctx.fillText(`max ${max.toFixed(2)}`, 6, padTop);
+  ctx.fillText(`min ${min.toFixed(2)}`, 6, h - padBottom);
+
+  const plotY = (v) => {
+    const y = h - padBottom - ((v - min) / range) * (h - padTop - padBottom);
+    return Math.max(padTop, Math.min(h - padBottom, y));
+  };
+
+  const plot = (series, color) => {
+    ctx.beginPath();
+    series.forEach((v, i) => {
+      const x = (i / (series.length - 1)) * w;
+      const y = plotY(v);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  };
+
+  plot(seriesA, "#5fb3a3");
+  if (seriesB && seriesB.length > 1) plot(seriesB, "#e0b84c");
+
+  if (hoverFrac != null) {
+    const idxA = Math.round(hoverFrac * (seriesA.length - 1));
+    const x = (idxA / (seriesA.length - 1)) * w;
+    ctx.strokeStyle = "#8b939a";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, padTop);
+    ctx.lineTo(x, h - padBottom);
+    ctx.stroke();
+
+    const dot = (series, color) => {
+      if (!series || series.length < 2) return;
+      const idx = Math.round(hoverFrac * (series.length - 1));
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(x, plotY(series[idx]), 3.5, 0, Math.PI * 2);
+      ctx.fill();
+    };
+    dot(seriesA, "#5fb3a3");
+    dot(seriesB, "#e0b84c");
+  }
+}
+
+// --- Zoom / pan en las gráficas de replay -----------------------------------
+// Ventana compartida por todas las gráficas del replay: rueda del mouse para
+// acercar/alejar (centrado en el cursor), arrastrar para mover, doble clic
+// para resetear. Redibuja solo los canvas (no reconstruye el DOM), así el
+// arrastre se siente fluido.
+
+/** Extrae {values, times} de una columna, manteniendo values[i]/times[i] alineados. */
+function seriesWithTimes(rows, key) {
+  const values = [];
+  const times = [];
+  rows.forEach((r) => {
+    const v = r.values[key];
+    if (v !== undefined && !Number.isNaN(v)) {
+      values.push(v);
+      times.push(r.t);
+    }
+  });
+  return { values, times };
+}
+
+function sliceByZoom(values, times, zoom) {
+  if (values.length < 2) return { values, times };
+  const startIdx = Math.max(0, Math.floor(zoom.start * (values.length - 1)));
+  const endIdx = Math.min(values.length - 1, Math.ceil(zoom.end * (values.length - 1)));
+  const v = values.slice(startIdx, endIdx + 1);
+  const t = times.slice(startIdx, endIdx + 1);
+  return v.length >= 2 ? { values: v, times: t } : { values, times };
+}
+
+function redrawReplayCharts() {
+  const a = replayLogs.A;
+  const b = replayLogs.B;
+  if (!a) return;
+
+  currentReplayCanvases.forEach((entry) => {
+    const fullA = seriesWithTimes(a.rows, entry.key);
+    const fullB = entry.sim ? (entry.keyB ? seriesWithTimes(a.rows, entry.keyB) : null) : b ? seriesWithTimes(b.rows, entry.key) : null;
+    const slicedA = sliceByZoom(fullA.values, fullA.times, replayZoom);
+    const slicedB = fullB ? sliceByZoom(fullB.values, fullB.times, replayZoom) : null;
+
+    entry.seriesA = slicedA.values;
+    entry.timesA = slicedA.times;
+    entry.seriesB = slicedB ? slicedB.values : null;
+    entry.timesB = slicedB ? slicedB.times : null;
+
+    drawOverlayChart(entry.canvas, entry.seriesA, entry.seriesB);
+  });
+
+  const hint = document.getElementById("replay-zoom-hint");
+  if (hint) {
+    const pct = Math.round((replayZoom.end - replayZoom.start) * 100);
+    hint.textContent = pct >= 100 ? "" : `Mostrando ${pct}% de la sesión`;
+  }
+}
+
+function zoomReplayAt(canvas, clientX, factor) {
+  const rect = canvas.getBoundingClientRect();
+  const cursorFrac = rect.width ? (clientX - rect.left) / rect.width : 0.5;
+  const pointFrac = replayZoom.start + cursorFrac * (replayZoom.end - replayZoom.start);
+  const currentWidth = replayZoom.end - replayZoom.start;
+  const newWidth = Math.max(0.02, Math.min(1, currentWidth * factor));
+  let newStart = pointFrac - (pointFrac - replayZoom.start) * (newWidth / currentWidth);
+  let newEnd = newStart + newWidth;
+  if (newStart < 0) {
+    newEnd -= newStart;
+    newStart = 0;
+  }
+  if (newEnd > 1) {
+    newStart -= newEnd - 1;
+    newEnd = 1;
+  }
+  replayZoom = { start: Math.max(0, newStart), end: Math.min(1, newEnd) };
+  redrawReplayCharts();
+}
+
+function attachZoomPan(entry) {
+  const canvas = entry.canvas;
+  if (!canvas) return;
+  canvas.style.cursor = "grab";
+  canvas.addEventListener(
+    "wheel",
+    (evt) => {
+      evt.preventDefault();
+      zoomReplayAt(canvas, evt.clientX, evt.deltaY < 0 ? 0.85 : 1 / 0.85);
+    },
+    { passive: false }
+  );
+  canvas.addEventListener("mousedown", (evt) => {
+    replayDragState = { startX: evt.clientX, startZoom: { ...replayZoom }, canvas };
+    canvas.style.cursor = "grabbing";
+  });
+  canvas.addEventListener("dblclick", () => {
+    replayZoom = { start: 0, end: 1 };
+    redrawReplayCharts();
+  });
+
+  canvas.addEventListener("mousemove", (evt) => {
+    if (replayDragState || !entry.seriesA || entry.seriesA.length < 2) return;
+    const frac = fracXFromEvent(canvas, evt);
+    if (frac == null) return;
+
+    const idxA = Math.round(frac * (entry.seriesA.length - 1));
+    const rows = [
+      { label: entry.labelA || replayLogs.A.name, value: entry.seriesA[idxA], units: entry.units, t: entry.timesA[idxA], color: "#5fb3a3" },
+    ];
+    if (entry.seriesB && entry.seriesB.length > 1) {
+      const idxB = Math.round(frac * (entry.seriesB.length - 1));
+      rows.push({
+        label: entry.labelB || replayLogs.B.name,
+        value: entry.seriesB[idxB],
+        units: entry.units,
+        t: entry.timesB[idxB],
+        color: "#e0b84c",
+      });
+    }
+    showTooltip(evt.clientX, evt.clientY, rows);
+    drawOverlayChart(canvas, entry.seriesA, entry.seriesB, { hoverFrac: frac });
+  });
+
+  canvas.addEventListener("mouseleave", () => {
+    hideTooltip();
+    if (entry.seriesA) drawOverlayChart(canvas, entry.seriesA, entry.seriesB);
+  });
+}
+
+window.addEventListener("mousemove", (evt) => {
+  if (!replayDragState) return;
+  const rect = replayDragState.canvas.getBoundingClientRect();
+  const width = replayDragState.startZoom.end - replayDragState.startZoom.start;
+  const deltaFrac = rect.width ? ((evt.clientX - replayDragState.startX) / rect.width) * width : 0;
+  let newStart = replayDragState.startZoom.start - deltaFrac;
+  let newEnd = replayDragState.startZoom.end - deltaFrac;
+  if (newStart < 0) {
+    newStart = 0;
+    newEnd = width;
+  }
+  if (newEnd > 1) {
+    newEnd = 1;
+    newStart = 1 - width;
+  }
+  replayZoom = { start: newStart, end: newEnd };
+  redrawReplayCharts();
+});
+
+window.addEventListener("mouseup", () => {
+  if (replayDragState) {
+    replayDragState.canvas.style.cursor = "grab";
+    replayDragState = null;
+  }
+});
+
+// --- Simulación del chip sobre el log del replay ----------------------------
+// Con el .xdf $4E y un .bin cargados, calcula cuadro por cuadro lo que ORDENA
+// la ECM (prom-sim.js) y lo agrega al replay como series extra, más un resumen
+// de detonación, ralentí con A/C y tiempo por celda de la tabla de avance.
+// Con un chip B, todo sale lado a lado para comparar versiones antes de grabar.
+
+const SIM = {
+  totalA: "sim:avance:A",
+  totalB: "sim:avance:B",
+  egrA: "sim:egr:A",
+  egrB: "sim:egr:B",
+  dcA: "sim:egrdc:A",
+};
+
+/** Columna del log cuyo nombre normalizado cumple `re` (los CSV traen "MAP (voltaje)", "A/C pedido"...). */
+function findLogKey(log, re) {
+  const c = log.columns.find((col) => re.test(normalizeLabel(col.key)));
+  return c ? c.key : null;
+}
+
+const median = (arr) => {
+  const s = arr.filter((v) => v != null && !Number.isNaN(v)).sort((x, y) => x - y);
+  return s.length ? s[Math.floor(s.length / 2)] : null;
+};
+
+/**
+ * Corre la simulación sobre el log A y escribe las series en sus filas
+ * (r.values[SIM.*], fuera de log.columns para que no salgan como columnas del
+ * CSV). Devuelve null si falta el .xdf/.bin o columnas del log; si no, el
+ * resumen para pintar.
+ */
+function computeReplaySim(log) {
+  if (!loadedBin || !loadedTables.length) return null;
+  const model = buildSparkModel(loadedXdf);
+  if (!model.supported) return { error: `El .xdf cargado no trae lo necesario para simular (${model.missing.join(", ")}).` };
+
+  const k = {
+    rpm: findLogKey(log, /^rpm$/),
+    map: findLogKey(log, /^map/),
+    cool: findLogKey(log, /refrigerante|coolant/),
+    mph: findLogKey(log, /velocidad|mph|vss/),
+    tps: findLogKey(log, /^tps/),
+    ac: findLogKey(log, /a c pedido/),
+    knock: findLogKey(log, /detonacion|knock/),
+  };
+  if (!k.rpm || !k.map) return { error: "El log no trae columnas de RPM y MAP: no hay con qué simular." };
+
+  const rows = log.rows;
+  const v = (r, key) => (key ? r.values[key] : undefined);
+  const samples = rows.map((r) => ({
+    rpm: v(r, k.rpm) ?? null,
+    mapV: v(r, k.map) ?? null,
+    coolantC: v(r, k.cool) ?? null,
+    mph: v(r, k.mph) ?? null,
+    tpsV: v(r, k.tps) ?? null,
+    acRequested: v(r, k.ac) === 1,
+  }));
+  // Mariposa cerrada = lo más bajo que marcó el TPS (percentil 2, por si hay un frame raro);
+  // presión barométrica = MAP con llave en ON y motor parado, si el log la trae.
+  const tpsSorted = samples.map((s) => s.tpsV).filter((x) => x != null).sort((x, y) => x - y);
+  const tpsClosedV = Math.max(0.3, tpsSorted[Math.floor(tpsSorted.length * 0.02)] ?? 0.49);
+  const baroKpa = median(samples.filter((s) => s.rpm === 0 && s.mapV > 3.5).map((s) => mapVoltsToKpa(s.mapV))) ?? 90;
+
+  const simA = simulateLog(model, loadedBin, samples, { baroKpa, tpsClosedV });
+  const simB = simBinB ? simulateLog(model, simBinB.bytes, samples, { baroKpa, tpsClosedV }) : null;
+  const offset = simBaseDeg - 10; // la ECM ordena suponiendo base de 10°: con otra base, el cigüeñal ve esto de más/menos
+
+  rows.forEach((r, i) => {
+    const a = simA[i];
+    const b = simB ? simB[i] : null;
+    r.values[SIM.totalA] = a ? a.total + offset : undefined;
+    r.values[SIM.egrA] = a ? a.egrSpark : undefined;
+    r.values[SIM.dcA] = a ? a.egrDc : undefined;
+    r.values[SIM.totalB] = b ? b.total + offset : undefined;
+    r.values[SIM.egrB] = b ? b.egrSpark : undefined;
+  });
+
+  // Detonación: incrementos del contador con el motor caliente, >30 s después de arrancar (el contador
+  // arranca con ruido) y sin el pico de "sube y regresa" del bit perdido.
+  const knockEvents = [];
+  let runStart = null;
+  rows.forEach((r, i) => {
+    const s = samples[i];
+    if (!(s.rpm > 0)) {
+      runStart = null;
+      return;
+    }
+    if (runStart === null) runStart = r.t;
+    const prev = rows[i - 1];
+    const next = rows[i + 1];
+    const kn = v(r, k.knock);
+    const kp = prev ? v(prev, k.knock) : undefined;
+    if (kn == null || kp == null || !(v(prev, k.rpm) > 0)) return;
+    const dk = kn - kp;
+    const spike = next && v(next, k.rpm) > 0 && v(next, k.knock) < kn;
+    if (dk > 0 && dk < 30 && !spike && r.t - runStart > 30000 && s.coolantC >= 80 && simA[i]) {
+      knockEvents.push({ i, dk, a: simA[i], b: simB ? simB[i] : null });
+    }
+  });
+
+  // Ralentí caliente con A/C pedido, parado y con la mariposa cerrada.
+  const idleAc = samples
+    .map((s, i) => ({ s, a: simA[i], b: simB ? simB[i] : null }))
+    .filter(({ s, a }) => a && s.acRequested && s.mph === 0 && s.coolantC >= 80 && s.tpsV != null && s.tpsV <= tpsClosedV + 0.05);
+
+  // Tiempo por celda de la tabla de avance (y dónde cayó la detonación).
+  const mainT = model.tables.mainSpark;
+  const usage = Array.from({ length: mainT.rows }, () => Array(mainT.cols).fill(0));
+  const knockUsage = Array.from({ length: mainT.rows }, () => Array(mainT.cols).fill(0));
+  let running = 0;
+  samples.forEach((s, i) => {
+    if (!simA[i]) return;
+    const { row, col } = nearestCell(mainT, s.rpm, simA[i].kpa);
+    usage[row][col]++;
+    running++;
+  });
+  knockEvents.forEach((e) => {
+    const s = samples[e.i];
+    const { row, col } = nearestCell(mainT, s.rpm, e.a.kpa);
+    knockUsage[row][col] += e.dk;
+  });
+
+  const rolling = simA.filter((a, i) => a && samples[i].mph > 5);
+  return {
+    model,
+    hasB: !!simB,
+    baroKpa,
+    tpsClosedV,
+    knockEvents,
+    idleAc,
+    egrPct: rolling.length ? (100 * rolling.filter((a) => a.egrActive).length) / rolling.length : null,
+    usage,
+    knockUsage,
+    running,
+    mainT,
+  };
+}
+
+function simSummaryHtml(sim) {
+  if (sim.error) return `<div class="hint" style="margin-bottom:12px;">Simulación: ${esc(sim.error)}</div>`;
+  const fmt = (x, d = 1) => (x == null ? "—" : x.toFixed(d));
+  const ev = sim.knockEvents;
+  const counts = ev.reduce((s, e) => s + e.dk, 0);
+  const off = simBaseDeg - 10;
+  const realA = median(ev.map((e) => e.a.total + off));
+  const realB = sim.hasB ? median(ev.map((e) => e.b && e.b.total + off)) : null;
+  const egrInKnock = ev.filter((e) => e.a.egrActive).length;
+  const idleRpm = median(sim.idleAc.map((x) => x.s.rpm));
+  const idleLow = sim.idleAc.filter((x) => x.s.rpm < 700).length;
+  const tgtA = sim.idleAc.length ? sim.idleAc[0].a.idleTarget : null;
+  const tgtB = sim.hasB && sim.idleAc.length ? sim.idleAc[0].b.idleTarget : null;
+
+  const t = sim.mainT;
+  const maxUse = Math.max(1, ...sim.usage.flat());
+  const head = `<tr><th>RPM \\ kPa</th>${t.xAxis.map((x) => `<th>${esc(x)}</th>`).join("")}</tr>`;
+  const body = t.yAxis
+    .map((y, r) => {
+      const cells = t.xAxis
+        .map((_, c) => {
+          const n = sim.usage[r][c];
+          const kn = sim.knockUsage[r][c];
+          const val = t.valueAt(r, c, loadedBin);
+          const alpha = n ? 0.12 + 0.6 * (n / maxUse) : 0;
+          const style = `background:rgba(95,179,163,${alpha.toFixed(2)});${kn ? "outline:2px solid var(--danger);outline-offset:-2px;" : ""}`;
+          const tip = `${n} cuadros${kn ? `, ${kn} cuentas de detonación` : ""}`;
+          return `<td style="${style}" title="${tip}">${val == null ? "-" : val.toFixed(0)}${kn ? `<br><span style="color:var(--danger);font-size:10px;">⚡${kn}</span>` : ""}</td>`;
+        })
+        .join("");
+      return `<tr><th>${esc(y)}</th>${cells}</tr>`;
+    })
+    .join("");
+
+  return `
+    <div class="table-block">
+      <h3>Simulación del chip <span style="color:var(--text-dim);font-size:12px;">(chip A: ${esc(loadedBinName || "bin cargado")}${sim.hasB ? ` · chip B: ${esc(simBinB.name)}` : ""} · base ${simBaseDeg}°)</span></h3>
+      <div class="hint">Avance que ORDENA la ECM según el .bin (tabla principal + temperatura + EGR, con su tope), pasado al cigüeñal con la base elegida. No incluye control de chispa de ralentí, retardo por detonación ni avance de carretera, y no predice cómo responde el motor: sirve para comparar versiones.</div>
+      <table class="data-table" style="max-width:720px;margin:10px 0;">
+        <tbody>
+          <tr><th style="text-align:left;">Detonación (≥80 °C, >30 s de arrancado)</th><td style="text-align:left;">${ev.length} eventos, ${counts} cuentas; ${egrInKnock} con el EGR activo en el chip A</td></tr>
+          <tr><th style="text-align:left;">Avance mediano en esos cuadros</th><td style="text-align:left;">chip A ${fmt(realA)}°${sim.hasB ? ` · chip B ${fmt(realB)}°` : ""}</td></tr>
+          <tr><th style="text-align:left;">EGR activo rodando (chip A)</th><td style="text-align:left;">${sim.egrPct == null ? "—" : `${sim.egrPct.toFixed(0)} % de los cuadros a >5 MPH`}</td></tr>
+          <tr><th style="text-align:left;">Ralentí caliente con A/C pedido</th><td style="text-align:left;">${sim.idleAc.length ? `${sim.idleAc.length} cuadros, RPM mediano ${fmt(idleRpm, 0)}, ${idleLow} bajo 700 · objetivo chip A ${fmt(tgtA, 0)}${sim.hasB ? ` · chip B ${fmt(tgtB, 0)}` : ""}` : "no hay en este log"}</td></tr>
+          <tr><th style="text-align:left;">Supuestos</th><td style="text-align:left;">barométrica ${fmt(sim.baroKpa, 0)} kPa · mariposa cerrada ${fmt(sim.tpsClosedV, 2)} V</td></tr>
+        </tbody>
+      </table>
+      <details>
+        <summary>Tiempo por celda de "${esc(t.name)}" (chip A; borde rojo = hubo detonación ahí)</summary>
+        <table class="data-table">${head}${body}</table>
+      </details>
+    </div>
+  `;
+}
+
+function renderReplay() {
+  const a = replayLogs.A;
+  const b = replayLogs.B;
+  if (!a) {
+    viewMode = "live";
+    currentReplayCanvases = [];
+    renderMain();
+    return;
+  }
+
+  viewMode = "replay";
+  replayZoom = { start: 0, end: 1 };
+  updateAlertBanner([]);
+  closeSurface3D(); // el panel 3D flota fuera de el.main - hay que cerrarlo a mano al salir de la vista en vivo
+
+  const sim = computeReplaySim(a);
+  const labelA = `chip A`;
+  const labelB = simBinB ? `chip B` : null;
+  const simCharts =
+    sim && !sim.error
+      ? [
+          { key: SIM.totalA, keyB: sim.hasB ? SIM.totalB : null, title: `Avance estimado en el cigüeñal (base ${simBaseDeg}°)`, units: "°" },
+          { key: SIM.egrA, keyB: sim.hasB ? SIM.egrB : null, title: "Avance agregado por el EGR", units: "°" },
+          { key: SIM.dcA, keyB: null, title: "Ciclo del EGR que ordena el chip A", units: "%" },
+        ].map((c) => ({ ...c, sim: true, labelA, labelB }))
+      : [];
+
+  el.main.innerHTML = `
+    <h3>Replay: ${a.name}${b ? ` vs ${b.name}` : ""}</h3>
+    <div class="replay-legend">
+      <span><span class="dot" style="background:#5fb3a3;"></span>${a.name} (${a.rows.length} muestras${a.excluded ? `, ${a.excluded} sospechosas excluidas` : ""})</span>
+      ${b ? `<span><span class="dot" style="background:#e0b84c;"></span>${b.name} (${b.rows.length} muestras${b.excluded ? `, ${b.excluded} sospechosas excluidas` : ""})</span>` : ""}
+      <span class="replay-zoom-controls">
+        <button id="replay-zoom-reset" type="button" class="close-chart">Reset zoom</button>
+        <span id="replay-zoom-hint" class="hint"></span>
+      </span>
+    </div>
+    <div class="hint" style="margin-bottom:12px;">Rueda del mouse: zoom · arrastrar: mover · doble clic: reset.${
+      !b ? " Carga un segundo log (Log B) para comparar ambos superpuestos." : ""
+    }</div>
+    ${sim ? simSummaryHtml(sim) : ""}
+    ${
+      simCharts.length
+        ? `<div class="replay-legend"><span><span class="dot" style="background:#5fb3a3;"></span>Simulación: chip A</span>${
+            sim.hasB ? `<span><span class="dot" style="background:#e0b84c;"></span>chip B</span>` : ""
+          }</div>`
+        : ""
+    }
+    <div class="param-list replay-list">
+      ${simCharts
+        .map(
+          (c) => `
+        <div class="chart-expanded replay-card">
+          <div class="chart-expanded-header">
+            <span>${c.title} <span class="units">${c.units}</span></span>
+          </div>
+          <canvas class="sparkline-big" data-key="${c.key}"></canvas>
+        </div>
+      `
+        )
+        .join("")}
+      ${a.columns
+        .map(
+          (c) => `
+        <div class="chart-expanded replay-card">
+          <div class="chart-expanded-header">
+            <span>${c.key} <span class="units">${c.units}</span></span>
+          </div>
+          <canvas class="sparkline-big" data-key="${c.key}"></canvas>
+        </div>
+      `
+        )
+        .join("")}
+    </div>
+  `;
+
+  currentReplayCanvases = [...simCharts, ...a.columns].map((c) => ({
+    key: c.key,
+    keyB: c.keyB || null, // en las gráficas de simulación, B es el chip B sobre el mismo log (no el log B)
+    sim: !!c.sim,
+    labelA: c.labelA || null,
+    labelB: c.labelB || null,
+    units: c.units,
+    canvas: el.main.querySelector(`canvas[data-key="${CSS.escape(c.key)}"]`),
+    seriesA: null,
+    seriesB: null,
+    timesA: null,
+    timesB: null,
+  }));
+  currentReplayCanvases.forEach((entry) => attachZoomPan(entry));
+  document.getElementById("replay-zoom-reset").addEventListener("click", () => {
+    replayZoom = { start: 0, end: 1 };
+    redrawReplayCharts();
+  });
+
+  redrawReplayCharts();
+}
+
+async function handleReplayFile(file, slot) {
+  if (!file) return;
+  try {
+    const text = await file.text();
+    replayLogs[slot] = parseCsvLog(text, file.name);
+    renderReplay();
+  } catch (err) {
+    alert("Error al leer el CSV: " + err.message);
+    console.error(err);
+  }
+}
+
+el.replayInputA.addEventListener("change", (evt) => handleReplayFile(evt.target.files[0], "A"));
+el.replayInputB.addEventListener("change", (evt) => handleReplayFile(evt.target.files[0], "B"));
+
+el.simBinInput.addEventListener("change", async (evt) => {
+  const file = evt.target.files[0];
+  if (!file) {
+    simBinB = null;
+  } else {
+    try {
+      simBinB = { name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) };
+    } catch (err) {
+      alert("Error al leer el binario: " + err.message);
+      console.error(err);
+      return;
+    }
+  }
+  if (viewMode === "replay") renderReplay();
+});
+
+el.simBaseSelect.addEventListener("change", () => {
+  simBaseDeg = parseInt(el.simBaseSelect.value, 10);
+  if (viewMode === "replay") renderReplay();
+});
+
+el.replayClearBtn.addEventListener("click", () => {
+  replayLogs = { A: null, B: null };
+  el.replayInputA.value = "";
+  el.replayInputB.value = "";
+  renderReplay();
+});
+
+// --- Comparador de binarios (checksum + diff byte a byte) ------------------
+// Funcionalidad de TunerPro aún no portada: comparar dos .bin de calibración.
+// No conocemos el checksum interno real de este ECM (requeriría documentación
+// específica del 1228062 que no tenemos) - los checksums de acá son genéricos
+// (suma de 8/16 bits, CRC32), útiles para confirmar si dos binarios son
+// idénticos o no, no para "arreglar" el checksum propio de la ECU.
+
+let crc32Table = null;
+function crc32(bytes) {
+  if (!crc32Table) {
+    crc32Table = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      crc32Table[n] = c >>> 0;
+    }
+  }
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) crc = crc32Table[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function binChecksums(bytes) {
+  let sum8 = 0;
+  let sum16 = 0;
+  for (let i = 0; i < bytes.length; i++) {
+    sum8 = (sum8 + bytes[i]) & 0xff;
+    sum16 = (sum16 + bytes[i]) & 0xffff;
+  }
+  return { sum8, sum16, crc32: crc32(bytes) };
+}
+
+function hexPad(n, width = 2) {
+  return n.toString(16).toUpperCase().padStart(width, "0");
+}
+
+/** offset -> texto (celda de tabla, constante o bandera del .xdf), para anotar en el diff dónde cae cada byte. */
+function buildTableOffsetIndex() {
+  const map = new Map();
+  const put = (offset, label) => map.set(offset, map.has(offset) ? `${map.get(offset)}; ${label}` : label);
+  loadedTables.forEach((t) => {
+    for (let r = 0; r < t.rows; r++) {
+      for (let c = 0; c < t.cols; c++) {
+        const cell = t.cells[r * t.cols + c];
+        if (cell) put(cell.offset, `${t.name} [fila ${r + 1}, col ${c + 1}]`);
+      }
+    }
+  });
+  loadedXdf.constants.forEach((k) => {
+    put(k.address, k.name);
+    if (k.bits > 8) put(k.address + 1, `${k.name} (byte bajo)`);
+  });
+  loadedXdf.flags.forEach((f) => put(f.address, `${f.name} (${f.bit != null ? `bit ${f.bit}` : `máscara 0x${hexPad(f.mask)}`})`));
+  return map;
+}
+
+function computeBinDiff(a, b) {
+  const len = Math.max(a.length, b.length);
+  const diffs = [];
+  for (let i = 0; i < len; i++) {
+    const va = i < a.length ? a[i] : null;
+    const vb = i < b.length ? b[i] : null;
+    if (va !== vb) diffs.push({ offset: i, a: va, b: vb });
+  }
+  return diffs;
+}
+
+function checksumRowHtml(label, cs) {
+  return `<tr><th>${label}</th><td>0x${hexPad(cs.sum8)}</td><td>0x${hexPad(cs.sum16, 4)}</td><td>0x${hexPad(cs.crc32, 8)}</td></tr>`;
+}
+
+function renderBinDiff() {
+  const a = binDiffFiles.A;
+  const b = binDiffFiles.B;
+  if (!a) {
+    viewMode = "live";
+    renderMain();
+    return;
+  }
+
+  viewMode = "bindiff";
+  updateAlertBanner([]);
+  closeSurface3D(); // el panel 3D flota fuera de el.main - hay que cerrarlo a mano al salir de la vista en vivo
+
+  let html = `
+    <h3>Comparador de binarios</h3>
+    <div class="replay-legend">
+      <span>A: ${a.name} (${a.bytes.length} bytes)</span>
+      ${b ? `<span>B: ${b.name} (${b.bytes.length} bytes)</span>` : ""}
+    </div>
+    <table class="data-table" style="max-width:560px;margin-bottom:16px;">
+      <thead><tr><th></th><th>Suma 8 bits</th><th>Suma 16 bits</th><th>CRC32</th></tr></thead>
+      <tbody>
+        ${checksumRowHtml("A", binChecksums(a.bytes))}
+        ${b ? checksumRowHtml("B", binChecksums(b.bytes)) : ""}
+      </tbody>
+    </table>
+    ${
+      loadedXdf.checksum
+        ? `<div class="hint" style="margin-bottom:10px;">Checksum que declara el .xdf — A: ${xdfChecksumText(a.bytes)}${b ? ` · B: ${xdfChecksumText(b.bytes)}` : ""}</div>`
+        : ""
+    }
+  `;
+
+  if (!b) {
+    html += `<div class="hint">Carga un segundo binario (Binario B) para ver las diferencias byte a byte.</div>`;
+  } else if (a.bytes.length === b.bytes.length && a.bytes.every((v, i) => v === b.bytes[i])) {
+    html += `<div class="hint">Los dos binarios son idénticos, byte por byte.</div>`;
+  } else {
+    const diffs = computeBinDiff(a.bytes, b.bytes);
+    const offsetIndex = buildTableOffsetIndex();
+    const maxLen = Math.max(a.bytes.length, b.bytes.length);
+    const pct = ((diffs.length / maxLen) * 100).toFixed(2);
+    const sizeNote =
+      a.bytes.length !== b.bytes.length
+        ? " — los binarios tienen tamaños distintos, se compararon hasta el más largo (offsets sin dato en uno de los dos se muestran como «—»)."
+        : "";
+    html += `<div class="hint" style="margin-bottom:10px;">${diffs.length} bytes distintos de ${maxLen} (${pct}%)${sizeNote}</div>`;
+
+    const shown = diffs.slice(0, 500);
+    const rows = shown
+      .map((d) => {
+        const locText = esc(offsetIndex.get(d.offset) || "");
+        return `<tr>
+          <td>0x${hexPad(d.offset, 4)} (${d.offset})</td>
+          <td>${d.a === null ? "—" : "0x" + hexPad(d.a)}</td>
+          <td>${d.b === null ? "—" : "0x" + hexPad(d.b)}</td>
+          <td style="text-align:left;">${locText}</td>
+        </tr>`;
+      })
+      .join("");
+
+    html += `
+      <table class="data-table">
+        <thead><tr><th>Offset</th><th>A</th><th>B</th><th style="text-align:left;">En el .xdf cargado</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      ${diffs.length > shown.length ? `<div class="hint">Mostrando las primeras ${shown.length} diferencias de ${diffs.length}.</div>` : ""}
+    `;
+  }
+
+  el.main.innerHTML = html;
+}
+
+async function handleBinDiffFile(file, slot) {
+  if (!file) return;
+  try {
+    binDiffFiles[slot] = { name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) };
+    renderBinDiff();
+  } catch (err) {
+    alert("Error al leer el binario: " + err.message);
+    console.error(err);
+  }
+}
+
+el.bindiffInputA.addEventListener("change", (evt) => handleBinDiffFile(evt.target.files[0], "A"));
+el.bindiffInputB.addEventListener("change", (evt) => handleBinDiffFile(evt.target.files[0], "B"));
+
+el.bindiffClearBtn.addEventListener("click", () => {
+  binDiffFiles = { A: null, B: null };
+  el.bindiffInputA.value = "";
+  el.bindiffInputB.value = "";
+  renderBinDiff();
+});
+
+// --- Log de sesión ---------------------------------------------------------
+
+el.downloadLogBtn.addEventListener("click", downloadLog);
+
+el.clearLogBtn.addEventListener("click", async () => {
+  await persistCurrentSession();
+  sessionLog = [];
+  updateLogCount();
+  startNewSession();
+});
+
+el.main.addEventListener("click", (evt) => {
+  if (viewMode !== "live") return;
+
+  const btn3d = evt.target.closest(".view-3d-btn");
+  if (btn3d) {
+    openSurface3D(parseInt(btn3d.dataset.tableIdx, 10));
+    return;
+  }
+
+  const card = evt.target.closest(".param-card");
+  if (!card) return;
+  const id = card.dataset.paramId;
+  expandedParamId = expandedParamId === id ? null : id;
+  renderMain();
+});
+
+// Selector manual de a qué parámetro en vivo corresponde cada eje de una
+// tabla, para cuando el auto-match (por nombre) falla o adivina mal.
+el.main.addEventListener("change", (evt) => {
+  const sel = evt.target.closest(".axis-select");
+  if (!sel) return;
+  axisOverrides[`${sel.dataset.tableIdx}:${sel.dataset.axis}`] = sel.value;
+  renderMain();
+});
+
+// Tooltip al pasar el cursor sobre las gráficas en vivo (tarjetas pequeñas y
+// la grande expandida). Delegado en el.main (que no se reemplaza en cada
+// render, solo su contenido) para no tener que reenganchar listeners en
+// cada actualización de datos.
+function liveParamForCanvas(canvas) {
+  if (canvas.classList.contains("sparkline-big")) {
+    return loadedParams.find((p) => p.id === expandedParamId) || null;
+  }
+  const card = canvas.closest(".param-card");
+  return card ? loadedParams.find((p) => p.id === card.dataset.paramId) || null : null;
+}
+
+el.main.addEventListener("mousemove", (evt) => {
+  if (viewMode !== "live") return;
+  const canvas = evt.target.closest("canvas.sparkline, canvas.sparkline-big");
+  if (!canvas) return;
+  const param = liveParamForCanvas(canvas);
+  const hist = param && paramHistory[param.id];
+  if (!param || !hist || hist.length < 2) return;
+
+  const frac = fracXFromEvent(canvas, evt);
+  if (frac == null) return;
+  const idx = Math.round(frac * (hist.length - 1));
+  const times = paramHistoryTimes[param.id];
+  showTooltip(evt.clientX, evt.clientY, [
+    {
+      label: param.name,
+      value: hist[idx],
+      units: param.units,
+      text: param.isFlag ? param.format(hist[idx]) : null,
+      t: times ? times[idx] : null,
+      color: "#5fb3a3",
+    },
+  ]);
+  drawChart(canvas, hist, { showLabels: canvas.classList.contains("sparkline-big"), hoverFrac: frac });
+});
+
+el.main.addEventListener("mouseout", (evt) => {
+  const canvas = evt.target.closest("canvas.sparkline, canvas.sparkline-big");
+  if (!canvas || canvas.contains(evt.relatedTarget)) return;
+  hideTooltip();
+  const param = liveParamForCanvas(canvas);
+  if (param && paramHistory[param.id]) {
+    drawChart(canvas, paramHistory[param.id], { showLabels: canvas.classList.contains("sparkline-big") });
+  }
+});
+
+updateLogCount();
+renderMain();
+startNewSession();
+refreshSessionList();

@@ -1,0 +1,11 @@
+# Red de seguridad del repo PÚBLICO: los hooks locales (tools/hooks) no corren si un archivo
+# se sube desde la web de GitHub. Esto falla (y GitHub avisa por correo) si aparece un bin,
+# un log del camión o un archivo de terceros. Mismas reglas: tools/check-publico.sh.
+name: Revisar que nada privado esté en el repo público
+on: [push, pull_request]
+jobs:
+  revisar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: git ls-files | bash tools/check-publico.sh
